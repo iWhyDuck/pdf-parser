@@ -28,6 +28,7 @@ from PIL import Image
 import os
 from pdf2image import convert_from_bytes
 import time
+import re
 
 # Page Configuration
 st.set_page_config(
@@ -95,6 +96,13 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
     }
+    .mode-selection {
+        background-color: #f0f8ff;
+        border: 2px solid #4a90e2;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -107,6 +115,7 @@ class Document:
     upload_time: Optional[datetime] = None
     file_hash: str = ""
     processing_method: str = ""
+    processing_mode: str = "basic"  # "basic" or "ai"
 
 @dataclass
 class ExtractionJob:
@@ -118,6 +127,7 @@ class ExtractionJob:
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: str = ""
+    processing_mode: str = "basic"
 
 @dataclass
 class ExtractedField:
@@ -133,6 +143,37 @@ class DatabaseManager:
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
         self.init_database()
+        self.migrate_database()
+
+    def migrate_database(self):
+        """Migrate database schema to latest version"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Check if processing_mode column exists in documents table
+            cursor.execute("PRAGMA table_info(documents)")
+            docs_columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'processing_mode' not in docs_columns:
+                cursor.execute("ALTER TABLE documents ADD COLUMN processing_mode TEXT DEFAULT 'basic'")
+                st.write("✅ Added processing_mode column to documents table")
+            
+            # Check if processing_mode column exists in extraction_jobs table
+            cursor.execute("PRAGMA table_info(extraction_jobs)")
+            jobs_columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'processing_mode' not in jobs_columns:
+                cursor.execute("ALTER TABLE extraction_jobs ADD COLUMN processing_mode TEXT DEFAULT 'basic'")
+                st.write("✅ Added processing_mode column to extraction_jobs table")
+            
+            conn.commit()
+            
+        except Exception as e:
+            st.error(f"Migration error: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def init_database(self):
         """Initialize database with required tables"""
@@ -147,7 +188,8 @@ class DatabaseManager:
                 file_size INTEGER NOT NULL,
                 upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 file_hash TEXT UNIQUE NOT NULL,
-                processing_method TEXT NOT NULL
+                processing_method TEXT NOT NULL,
+                processing_mode TEXT DEFAULT 'basic'
             )
         """)
 
@@ -162,6 +204,7 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TIMESTAMP,
                 error_message TEXT,
+                processing_mode TEXT DEFAULT 'basic',
                 FOREIGN KEY (document_id) REFERENCES documents (id)
             )
         """)
@@ -188,9 +231,9 @@ class DatabaseManager:
 
         cursor.execute("""
             INSERT OR REPLACE INTO documents
-            (filename, file_size, file_hash, processing_method)
-            VALUES (?, ?, ?, ?)
-        """, (doc.filename, doc.file_size, doc.file_hash, doc.processing_method))
+            (filename, file_size, file_hash, processing_method, processing_mode)
+            VALUES (?, ?, ?, ?, ?)
+        """, (doc.filename, doc.file_size, doc.file_hash, doc.processing_method, doc.processing_mode))
 
         doc_id = cursor.lastrowid
         conn.commit()
@@ -206,10 +249,10 @@ class DatabaseManager:
 
         cursor.execute("""
             INSERT INTO extraction_jobs
-            (document_id, status, selected_fields, total_fields_found, error_message)
-            VALUES (?, ?, ?, ?, ?)
+            (document_id, status, selected_fields, total_fields_found, error_message, processing_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (job.document_id, job.status, selected_fields_json,
-              job.total_fields_found, job.error_message))
+              job.total_fields_found, job.error_message, job.processing_mode))
 
         job_id = cursor.lastrowid
         conn.commit()
@@ -252,15 +295,33 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT
-                ej.id, d.filename, ej.status, ej.total_fields_found,
-                ej.created_at, ej.completed_at, d.processing_method
-            FROM extraction_jobs ej
-            JOIN documents d ON ej.document_id = d.id
-            ORDER BY ej.created_at DESC
-            LIMIT ?
-        """, (limit,))
+        # Check if processing_mode column exists
+        cursor.execute("PRAGMA table_info(extraction_jobs)")
+        columns = [column[1] for column in cursor.fetchall()]
+        has_processing_mode = 'processing_mode' in columns
+
+        if has_processing_mode:
+            query = """
+                SELECT
+                    ej.id, d.filename, ej.status, ej.total_fields_found,
+                    ej.created_at, ej.completed_at, d.processing_method, ej.processing_mode
+                FROM extraction_jobs ej
+                JOIN documents d ON ej.document_id = d.id
+                ORDER BY ej.created_at DESC
+                LIMIT ?
+            """
+        else:
+            query = """
+                SELECT
+                    ej.id, d.filename, ej.status, ej.total_fields_found,
+                    ej.created_at, ej.completed_at, d.processing_method, 'basic' as processing_mode
+                FROM extraction_jobs ej
+                JOIN documents d ON ej.document_id = d.id
+                ORDER BY ej.created_at DESC
+                LIMIT ?
+            """
+
+        cursor.execute(query, (limit,))
 
         results = []
         for row in cursor.fetchall():
@@ -271,7 +332,8 @@ class DatabaseManager:
                 'fields_found': row[3],
                 'created_at': row[4],
                 'completed_at': row[5],
-                'method': row[6]
+                'method': row[6],
+                'mode': row[7] if len(row) > 7 else 'basic'
             })
 
         conn.close()
@@ -294,6 +356,86 @@ class DatabaseManager:
 
         conn.close()
         return results
+
+class BasicTextAnalyzer:
+    """Basic text analysis without AI - pattern-based field detection"""
+
+    @staticmethod
+    def detect_basic_fields(text: str) -> List[str]:
+        """Detect common fields using regex patterns"""
+        detected_fields = []
+        
+        # Common patterns for different field types
+        patterns = {
+            "Email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+            "Phone": r'(\+\d{1,3}[-.]?)?\(?\d{1,4}\)?[-.]?\d{1,4}[-.]?\d{1,4}',
+            "Date": r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b',
+            "Amount": r'\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2}',
+            "Postal Code": r'\b\d{2}-\d{3}\b',  # Polish postal code
+            "NIP": r'\b\d{3}-\d{3}-\d{2}-\d{2}\b|\b\d{10}\b',  # Polish tax number
+            "PESEL": r'\b\d{11}\b',  # Polish personal number
+        }
+        
+        # Check which patterns match
+        for field_name, pattern in patterns.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                detected_fields.append(field_name)
+        
+        # Look for labeled fields (key: value patterns)
+        labeled_patterns = [
+            r'([A-Za-z\s]+):\s*([^\n\r]+)',
+            r'([A-Za-z\s]+)\s*-\s*([^\n\r]+)',
+            r'([A-Za-z\s]+)\s*=\s*([^\n\r]+)',
+        ]
+        
+        for pattern in labeled_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                label = match[0].strip()
+                if len(label) > 2 and len(label) < 30:  # Reasonable label length
+                    if label not in detected_fields:
+                        detected_fields.append(label)
+        
+        return detected_fields[:15]  # Limit to 15 fields
+
+    @staticmethod
+    def extract_basic_fields(text: str, selected_fields: List[str]) -> Dict[str, Any]:
+        """Extract values for selected fields using basic pattern matching"""
+        extracted_data = {}
+        
+        # Pattern-based extraction
+        extraction_patterns = {
+            "Email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+            "Phone": r'(\+\d{1,3}[-.]?)?\(?\d{1,4}\)?[-.]?\d{1,4}[-.]?\d{1,4}',
+            "Date": r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b',
+            "Amount": r'\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2}',
+            "Postal Code": r'\b\d{2}-\d{3}\b',
+            "NIP": r'\b\d{3}-\d{3}-\d{2}-\d{2}\b|\b\d{10}\b',
+            "PESEL": r'\b\d{11}\b',
+        }
+        
+        for field in selected_fields:
+            # Try direct pattern matching first
+            if field in extraction_patterns:
+                pattern = extraction_patterns[field]
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                if matches:
+                    extracted_data[field] = matches[0] if isinstance(matches[0], str) else matches[0][0]
+            else:
+                # Try to find labeled values
+                labeled_patterns = [
+                    rf'{re.escape(field)}\s*:\s*([^\n\r]+)',
+                    rf'{re.escape(field)}\s*-\s*([^\n\r]+)',
+                    rf'{re.escape(field)}\s*=\s*([^\n\r]+)',
+                ]
+                
+                for pattern in labeled_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        extracted_data[field] = match.group(1).strip()
+                        break
+        
+        return extracted_data
 
 class PDFProcessor:
     """Multi-stage PDF text extraction with fallbacks"""
@@ -565,6 +707,9 @@ def initialize_session_state():
     if 'processing_stage' not in st.session_state:
         st.session_state.processing_stage = "idle"
 
+    if 'processing_mode' not in st.session_state:
+        st.session_state.processing_mode = "basic"
+
 def create_download_link(data: Any, filename: str, format_type: str = "json") -> str:
     """Create download link for various formats"""
     if format_type == "json":
@@ -592,13 +737,14 @@ def create_download_link(data: Any, filename: str, format_type: str = "json") ->
     </a>
     '''
 
-def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
+def process_single_pdf(pdf_file, processing_mode: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     """Process a single PDF through the complete pipeline"""
     result = {
         'filename': pdf_file.name,
         'status': 'failed',
         'error': '',
         'processing_method': '',
+        'processing_mode': processing_mode,
         'discovered_fields': [],
         'extracted_data': {},
         'job_id': None
@@ -616,7 +762,8 @@ def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
             filename=pdf_file.name,
             file_size=len(file_content),
             file_hash=file_hash,
-            processing_method=""  # Will be updated
+            processing_method="",  # Will be updated
+            processing_mode=processing_mode
         )
         doc_id = st.session_state.db_manager.save_document(doc)
 
@@ -624,8 +771,8 @@ def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
         st.session_state.processing_stage = f"Extracting text from {pdf_file.name}..."
         text, method = PDFProcessor.extract_text_native(pdf_file)
 
-        # Stage 2: OCR fallback if needed
-        if not text:
+        # Stage 2: OCR fallback if needed (only for AI mode)
+        if not text and processing_mode == "ai" and api_key:
             st.session_state.processing_stage = f"Converting {pdf_file.name} to images for OCR..."
             images = PDFProcessor.convert_pdf_to_images(pdf_file)
 
@@ -646,10 +793,16 @@ def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
         st.session_state.db_manager.save_document(doc)
         result['processing_method'] = method
 
-        # Stage 3: AI field discovery
+        # Stage 3: Field discovery
         st.session_state.processing_stage = f"Discovering fields in {pdf_file.name}..."
-        ai_extractor = AIExtractor(api_key)
-        discovered_fields = ai_extractor.quick_scan_fields(text)
+        
+        if processing_mode == "ai" and api_key:
+            ai_extractor = AIExtractor(api_key)
+            discovered_fields = ai_extractor.quick_scan_fields(text)
+        else:
+            # Basic mode - use pattern-based detection
+            basic_analyzer = BasicTextAnalyzer()
+            discovered_fields = basic_analyzer.detect_basic_fields(text)
 
         if not discovered_fields:
             result['error'] = "No extractable fields found"
@@ -664,7 +817,8 @@ def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
             document_id=doc_id,
             status='pending',
             selected_fields=discovered_fields,
-            total_fields_found=len(discovered_fields)
+            total_fields_found=len(discovered_fields),
+            processing_mode=processing_mode
         )
         job_id = st.session_state.db_manager.save_extraction_job(job)
         result['job_id'] = job_id
@@ -676,15 +830,20 @@ def process_single_pdf(pdf_file, api_key: str) -> Dict[str, Any]:
         st.error(f"Error processing {pdf_file.name}: {str(e)}")
         return result
 
-def perform_detailed_extraction(job_id: int, selected_fields: List[str], text: str, api_key: str):
+def perform_detailed_extraction(job_id: int, selected_fields: List[str], text: str, processing_mode: str, api_key: Optional[str] = None):
     """Perform detailed extraction for selected fields"""
     try:
         # Update job status
         st.session_state.db_manager.update_extraction_job(job_id, 'processing')
 
         # Extract selected fields
-        ai_extractor = AIExtractor(api_key)
-        extracted_data = ai_extractor.detailed_extraction(text, selected_fields)
+        if processing_mode == "ai" and api_key:
+            ai_extractor = AIExtractor(api_key)
+            extracted_data = ai_extractor.detailed_extraction(text, selected_fields)
+        else:
+            # Basic mode - use pattern-based extraction
+            basic_analyzer = BasicTextAnalyzer()
+            extracted_data = basic_analyzer.extract_basic_fields(text, selected_fields)
 
         if extracted_data:
             # Save results
@@ -699,6 +858,45 @@ def perform_detailed_extraction(job_id: int, selected_fields: List[str], text: s
         st.session_state.db_manager.update_extraction_job(job_id, 'failed', str(e))
         st.error(f"Detailed extraction failed: {str(e)}")
         return None
+
+def render_mode_selection():
+    """Render processing mode selection"""
+    st.markdown('<div class="mode-selection">', unsafe_allow_html=True)
+    st.subheader("🔧 Choose Processing Mode")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        basic_selected = st.radio(
+            "",
+            ["basic", "ai"],
+            index=0 if st.session_state.processing_mode == "basic" else 1,
+            format_func=lambda x: "🔤 Basic Mode" if x == "basic" else "🤖 AI Mode",
+            key="mode_selector"
+        )
+        st.session_state.processing_mode = basic_selected
+    
+    with col2:
+        if st.session_state.processing_mode == "basic":
+            st.info("""
+            **Basic Mode Features:**
+            - Pattern-based text extraction
+            - No API key required
+            - Fast processing
+            - Common field detection (emails, phones, dates, etc.)
+            - Suitable for simple forms and structured documents
+            """)
+        else:
+            st.info("""
+            **AI Mode Features:**
+            - Advanced AI field detection
+            - OCR for image-based PDFs
+            - Context-aware extraction
+            - Requires OpenAI API key
+            - Better for complex documents
+            """)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 def render_field_selection_ui():
     """Render field selection interface"""
@@ -788,11 +986,14 @@ def render_results_ui():
         with st.expander(f"📄 {result['filename']} - {len(result['extracted_data'])} fields"):
 
             # Method and status info
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 method_color = "🔤" if result['processing_method'] != 'ocr' else "👁️"
                 st.write(f"**Method:** {method_color} {result['processing_method']}")
             with col2:
+                mode_icon = "🔤" if result.get('processing_mode') == 'basic' else "🤖"
+                st.write(f"**Mode:** {mode_icon} {result.get('processing_mode', 'basic')}")
+            with col3:
                 st.write(f"**Status:** ✅ Completed")
 
             # Results table
@@ -817,7 +1018,7 @@ def render_results_ui():
         # Combine all results
         batch_data = []
         for result in completed_results:
-            row_data = {"filename": result['filename']}
+            row_data = {"filename": result['filename'], "mode": result.get('processing_mode', 'basic')}
             row_data.update(result['extracted_data'])
             batch_data.append(row_data)
 
@@ -840,12 +1041,15 @@ def render_history_ui():
     df = pd.DataFrame(history)
     df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
 
+    # Add mode icons
+    df['mode_display'] = df['mode'].apply(lambda x: f"🔤 {x}" if x == 'basic' else f"🤖 {x}")
+
     # Add download buttons for completed jobs
     for i, row in df.iterrows():
         if row['status'] == 'completed':
             job_results = st.session_state.db_manager.get_extraction_results(row['job_id'])
             if job_results:
-                with st.expander(f"📄 {row['filename']} - {row['created_at']}"):
+                with st.expander(f"📄 {row['filename']} - {row['created_at']} ({row['mode_display']})"):
                     results_df = pd.DataFrame([
                         {"Field": k, "Value": v}
                         for k, v in job_results.items()
@@ -857,7 +1061,7 @@ def render_history_ui():
                     st.markdown(json_link, unsafe_allow_html=True)
 
     # Summary table
-    st.dataframe(df[['filename', 'status', 'fields_found', 'method', 'created_at']],
+    st.dataframe(df[['filename', 'status', 'fields_found', 'method', 'mode_display', 'created_at']],
                 use_container_width=True, hide_index=True)
 
 def main():
@@ -874,15 +1078,30 @@ def main():
     with st.sidebar:
         st.header("🔧 Configuration")
 
-        api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            placeholder="sk-...",
-            help="Enter your OpenAI API key for AI processing"
+        # Processing mode selection
+        st.subheader("Processing Mode")
+        mode = st.selectbox(
+            "Choose mode:",
+            ["basic", "ai"],
+            index=0 if st.session_state.processing_mode == "basic" else 1,
+            format_func=lambda x: "🔤 Basic (No API)" if x == "basic" else "🤖 AI Enhanced"
         )
+        st.session_state.processing_mode = mode
 
-        if not api_key:
-            st.warning("⚠️ API key required")
+        # API key input (only show for AI mode)
+        api_key = None
+        if st.session_state.processing_mode == "ai":
+            api_key = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                placeholder="sk-...",
+                help="Required for AI mode processing"
+            )
+
+            if not api_key:
+                st.warning("⚠️ API key required for AI mode")
+        else:
+            st.success("✅ Basic mode - no API key needed")
 
         st.markdown("---")
 
@@ -899,7 +1118,15 @@ def main():
         st.markdown("**📊 Quick Stats:**")
         history = st.session_state.db_manager.get_extraction_history(10)
         completed_jobs = len([h for h in history if h['status'] == 'completed'])
+        basic_jobs = len([h for h in history if h.get('mode') == 'basic'])
+        ai_jobs = len([h for h in history if h.get('mode') == 'ai'])
+        
         st.metric("Completed Jobs", completed_jobs)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Basic", basic_jobs)
+        with col2:
+            st.metric("AI", ai_jobs)
 
         if st.button("🗑️ Clear All Data"):
             if st.confirm("Delete all data?"):
@@ -916,8 +1143,11 @@ def main():
     elif page == "📈 History":
         render_history_ui()
 
-def render_processing_page(api_key: str):
+def render_processing_page(api_key: Optional[str]):
     """Render the main processing page"""
+
+    # Mode selection info
+    render_mode_selection()
 
     # Upload Section
     st.subheader("📁 Upload PDF Documents")
@@ -941,12 +1171,14 @@ def render_processing_page(api_key: str):
         if valid_files:
             st.success(f"✅ {len(valid_files)} files ready for processing")
 
-            # Process button
-            if st.button("🚀 Process Documents", type="primary", disabled=not api_key):
-                if not api_key:
-                    st.error("Please enter your OpenAI API key first")
-                    return
+            # Check if API key is required
+            can_process = True
+            if st.session_state.processing_mode == "ai" and not api_key:
+                st.error("🔑 OpenAI API key is required for AI mode")
+                can_process = False
 
+            # Process button
+            if st.button("🚀 Process Documents", type="primary", disabled=not can_process):
                 # Initialize results
                 st.session_state.processing_results = []
                 st.session_state.discovered_fields = []
@@ -963,13 +1195,13 @@ def render_processing_page(api_key: str):
                         st.markdown(f'<div class="processing-stage">Processing {pdf_file.name}...</div>',
                                   unsafe_allow_html=True)
 
-                    result = process_single_pdf(pdf_file, api_key)
+                    result = process_single_pdf(pdf_file, st.session_state.processing_mode, api_key)
                     st.session_state.processing_results.append(result)
 
                     if result['status'] == 'fields_discovered':
                         st.session_state.discovered_fields.extend(result['discovered_fields'])
 
-                status_container.success(f"✅ Processed {len(valid_files)} documents")
+                status_container.success(f"✅ Processed {len(valid_files)} documents using {st.session_state.processing_mode} mode")
                 st.experimental_rerun()
 
     # Field Selection
@@ -979,8 +1211,9 @@ def render_processing_page(api_key: str):
 
         # Extract button
         if st.session_state.selected_fields and st.button("🎯 Extract Selected Fields", type="primary"):
-            if not api_key:
-                st.error("Please enter your OpenAI API key")
+            # Check if API key is required
+            if st.session_state.processing_mode == "ai" and not api_key:
+                st.error("🔑 OpenAI API key is required for AI mode extraction")
                 return
 
             progress_bar = st.progress(0)
@@ -999,6 +1232,7 @@ def render_processing_page(api_key: str):
                         result['job_id'],
                         st.session_state.selected_fields,
                         result.get('text_preview', ''),
+                        st.session_state.processing_mode,
                         api_key
                     )
 
@@ -1010,7 +1244,7 @@ def render_processing_page(api_key: str):
                     progress = (i + 1) / len(st.session_state.processing_results)
                     progress_bar.progress(progress)
 
-            status_container.success(f"✅ Completed extraction for {extraction_count} documents")
+            status_container.success(f"✅ Completed extraction for {extraction_count} documents using {st.session_state.processing_mode} mode")
             st.experimental_rerun()
 
     # Show processing status
@@ -1028,6 +1262,7 @@ def render_processing_page(api_key: str):
             summary_data.append({
                 "Filename": result['filename'],
                 "Status": result['status'],
+                "Mode": f"🔤 {result.get('processing_mode', 'basic')}" if result.get('processing_mode') == 'basic' else f"🤖 {result.get('processing_mode', 'ai')}",
                 "Method": result.get('processing_method', 'N/A'),
                 "Fields Found": len(result.get('discovered_fields', [])),
                 "Fields Extracted": len(result.get('extracted_data', {}))
