@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; }
+        .field { margin: 10px 0; }
+        .label { font-weight: bold; display: inline-block; width: 150px; }
+        .value { display: inline-block; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>INSURANCE CLAIM FORM</h1>
+        <p>Policy Management System</p>
+        <p>Document ID: CLM-2024-001234</p>
+    </div>
+
+    <div class="section">
+        <h2>Customer Information</h2>
+        <div class="field">
+            <span class="label">Customer Name:</span>
+            <span class="value">Jan Kowalski</span>
+        </div>
+        <div class="field">
+            <span class="label">Policy Number:</span>
+            <span class="value">POL-789456123</span>
+        </div>
+        <div class="field">
+            <span class="label">Phone Number:</span>
+            <span class="value">+48 123 456 789</span>
+        </div>
+        <div class="field">
+            <span class="label">Email Address:</span>
+            <span class="value">jan.kowalski@email.com</span>
+        </div>
+        <div class="field">
+            <span class="label">Address:</span>
+            <span class="value">ul. Krakowska 15/3, 31-066 Kraków, Poland</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Claim Details</h2>
+        <div class="field">
+            <span class="label">Claim Number:</span>
+            <span class="value">CLM-2024-001234</span>
+        </div>
+        <div class="field">
+            <span class="label">Claim Date:</span>
+            <span class="value">August 12, 2025</span>
+        </div>
+        <div class="field">
+            <span class="label">Incident Date:</span>
+            <span class="value">August 10, 2025</span>
+        </div>
+        <div class="field">
+            <span class="label">Claim Type:</span>
+            <span class="value">Vehicle Damage</span>
+        </div>
+        <div class="field">
+            <span class="label">Claim Amount:</span>
+            <span class="value">$3,450.00</span>
+        </div>
+        <div class="field">
+            <span class="label">Status:</span>
+            <span class="value">Under Review</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Vehicle Information</h2>
+        <div class="field">
+            <span class="label">Make:</span>
+            <span class="value">Toyota</span>
+        </div>
+        <div class="field">
+            <span class="label">Model:</span>
+            <span class="value">Camry</span>
+        </div>
+        <div class="field">
+            <span class="label">Year:</span>
+            <span class="value">2021</span>
+        </div>
+        <div class="field">
+            <span class="label">VIN:</span>
+            <span class="value">4T1BF1FK5DU123456</span>
+        </div>
+        <div class="field">
+            <span class="label">License Plate:</span>
+            <span class="value">KR AB123</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Financial Summary</h2>
+        <table>
+            <tr>
+                <th>Description</th>
+                <th>Amount</th>
+            </tr>
+            <tr>
+                <td>Repair Estimate</td>
+                <td>$2,800.00</td>
+            </tr>
+            <tr>
+                <td>Deductible</td>
+                <td>$500.00</td>
+            </tr>
+            <tr>
+                <td>Additional Fees</td>
+                <td>$150.00</td>
+            </tr>
+            <tr>
+                <td><strong>Total Claim Amount</strong></td>
+                <td><strong>$3,450.00</strong></td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Processing Information</h2>
+        <div class="field">
+            <span class="label">Agent Name:</span>
+            <span class="value">Anna Nowak</span>
+        </div>
+        <div class="field">
+            <span class="label">Agent ID:</span>
+            <span class="value">AGT-567890</span>
+        </div>
+        <div class="field">
+            <span class="label">Branch Office:</span>
+            <span class="value">Kraków Central Office</span>
+        </div>
+        <div class="field">
+            <span class="label">Processing Date:</span>
+            <span class="value">August 12, 2025</span>
+        </div>
+        <div class="field">
+            <span class="label">Expected Resolution:</span>
+            <span class="value">August 19, 2025</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Additional Notes</h2>
+        <p>The incident occurred during heavy rainfall on August 10th, 2025. 
+        The vehicle sustained damage to the front bumper and headlights after 
+        colliding with a fallen tree branch. Photos and police report have been 
+        submitted as supporting documentation.</p>
+        
+        <p><strong>Next Steps:</strong> Vehicle inspection scheduled for August 15th, 2025. 
+        Adjuster will contact customer within 2 business days.</p>
+    </div>
+
+    <div style="margin-top: 50px; text-align: center; color: #666;">
+        <p>This document was generated on August 12, 2025</p>
+        <p>Document Version: 1.0 | Reference: TEST-DOC-2024</p>
+    </div>
+</body>
+</html>
