@@ -157,7 +157,7 @@ class DatabaseManager:
             
             if 'processing_mode' not in docs_columns:
                 cursor.execute("ALTER TABLE documents ADD COLUMN processing_mode TEXT DEFAULT 'basic'")
-                st.write("✅ Added processing_mode column to documents table")
+                print("✅ Added processing_mode column to documents table")
             
             # Check if processing_mode column exists in extraction_jobs table
             cursor.execute("PRAGMA table_info(extraction_jobs)")
@@ -165,12 +165,12 @@ class DatabaseManager:
             
             if 'processing_mode' not in jobs_columns:
                 cursor.execute("ALTER TABLE extraction_jobs ADD COLUMN processing_mode TEXT DEFAULT 'basic'")
-                st.write("✅ Added processing_mode column to extraction_jobs table")
+                print("✅ Added processing_mode column to extraction_jobs table")
             
             conn.commit()
             
         except Exception as e:
-            st.error(f"Migration error: {e}")
+            print(f"Migration error: {e}")
             conn.rollback()
         finally:
             conn.close()
@@ -328,12 +328,12 @@ class DatabaseManager:
             results.append({
                 'job_id': row[0],
                 'filename': row[1],
-                'status': row[2],
+                'status': row,
                 'fields_found': row[3],
-                'created_at': row[4],
-                'completed_at': row[5],
+                'created_at': row,
+                'completed_at': row,
                 'method': row[6],
-                'mode': row[7] if len(row) > 7 else 'basic'
+                'mode': row if len(row) > 7 else 'basic'
             })
 
         conn.close()
@@ -420,7 +420,7 @@ class BasicTextAnalyzer:
                 pattern = extraction_patterns[field]
                 matches = re.findall(pattern, text, re.IGNORECASE)
                 if matches:
-                    extracted_data[field] = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                    extracted_data[field] = matches[0] if isinstance(matches, str) else matches
             else:
                 # Try to find labeled values
                 labeled_patterns = [
@@ -690,6 +690,19 @@ Document text:
             st.error(f"Detailed extraction failed: {str(e)}")
             return None
 
+def safe_convert_to_string(value):
+    """Safely convert any value to string, handling lists and complex types"""
+    if value is None:
+        return ""
+    elif isinstance(value, (list, tuple)):
+        # Convert list/tuple to comma-separated string
+        return ", ".join(str(item) for item in value)
+    elif isinstance(value, dict):
+        # Convert dict to JSON string
+        return json.dumps(value, ensure_ascii=False)
+    else:
+        return str(value)
+
 def initialize_session_state():
     """Initialize session state variables"""
     if 'db_manager' not in st.session_state:
@@ -868,7 +881,7 @@ def render_mode_selection():
     
     with col1:
         basic_selected = st.radio(
-            "",
+            "Select processing mode:",
             ["basic", "ai"],
             index=0 if st.session_state.processing_mode == "basic" else 1,
             format_func=lambda x: "🔤 Basic Mode" if x == "basic" else "🤖 AI Mode",
@@ -996,13 +1009,24 @@ def render_results_ui():
             with col3:
                 st.write(f"**Status:** ✅ Completed")
 
-            # Results table
+            # Results table with safe conversion
             if result['extracted_data']:
-                df = pd.DataFrame([
-                    {"Field": k, "Value": v}
-                    for k, v in result['extracted_data'].items()
-                ])
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                try:
+                    df_data = []
+                    for k, v in result['extracted_data'].items():
+                        df_data.append({
+                            "Field": safe_convert_to_string(k),
+                            "Value": safe_convert_to_string(v)
+                        })
+                    
+                    df = pd.DataFrame(df_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                
+                except Exception as e:
+                    st.error(f"Error displaying results table: {str(e)}")
+                    # Fallback to simple display
+                    for k, v in result['extracted_data'].items():
+                        st.write(f"**{k}:** {safe_convert_to_string(v)}")
 
                 # Download buttons
                 filename_base = result['filename'].replace('.pdf', '')
@@ -1015,11 +1039,15 @@ def render_results_ui():
     if len(completed_results) > 1:
         st.subheader("📦 Batch Export")
 
-        # Combine all results
+        # Combine all results with safe conversion
         batch_data = []
         for result in completed_results:
-            row_data = {"filename": result['filename'], "mode": result.get('processing_mode', 'basic')}
-            row_data.update(result['extracted_data'])
+            row_data = {
+                "filename": safe_convert_to_string(result['filename']), 
+                "mode": safe_convert_to_string(result.get('processing_mode', 'basic'))
+            }
+            for k, v in result['extracted_data'].items():
+                row_data[safe_convert_to_string(k)] = safe_convert_to_string(v)
             batch_data.append(row_data)
 
         batch_json_link = create_download_link(batch_data, "batch_extraction_results.json", "json")
@@ -1050,11 +1078,22 @@ def render_history_ui():
             job_results = st.session_state.db_manager.get_extraction_results(row['job_id'])
             if job_results:
                 with st.expander(f"📄 {row['filename']} - {row['created_at']} ({row['mode_display']})"):
-                    results_df = pd.DataFrame([
-                        {"Field": k, "Value": v}
-                        for k, v in job_results.items()
-                    ])
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+                    try:
+                        df_data = []
+                        for k, v in job_results.items():
+                            df_data.append({
+                                "Field": safe_convert_to_string(k),
+                                "Value": safe_convert_to_string(v)
+                            })
+                        
+                        results_df = pd.DataFrame(df_data)
+                        st.dataframe(results_df, use_container_width=True, hide_index=True)
+                    
+                    except Exception as e:
+                        st.error(f"Error displaying results: {str(e)}")
+                        # Fallback display
+                        for k, v in job_results.items():
+                            st.write(f"**{k}:** {safe_convert_to_string(v)}")
 
                     filename_base = row['filename'].replace('.pdf', '')
                     json_link = create_download_link(job_results, f"{filename_base}_historical.json", "json")
@@ -1111,29 +1150,6 @@ def main():
             ["🏠 Process Documents", "📊 View Results", "📈 History"],
             index=0
         )
-
-        st.markdown("---")
-
-        # Stats
-        st.markdown("**📊 Quick Stats:**")
-        history = st.session_state.db_manager.get_extraction_history(10)
-        completed_jobs = len([h for h in history if h['status'] == 'completed'])
-        basic_jobs = len([h for h in history if h.get('mode') == 'basic'])
-        ai_jobs = len([h for h in history if h.get('mode') == 'ai'])
-        
-        st.metric("Completed Jobs", completed_jobs)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Basic", basic_jobs)
-        with col2:
-            st.metric("AI", ai_jobs)
-
-        if st.button("🗑️ Clear All Data"):
-            if st.confirm("Delete all data?"):
-                os.remove(DATABASE_PATH)
-                st.session_state.db_manager = DatabaseManager()
-                st.success("All data cleared!")
-                st.experimental_rerun()
 
     # Main Content
     if page == "🏠 Process Documents":
