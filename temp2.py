@@ -6,19 +6,62 @@ from __future__ import annotations
 import io, json, os, re
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any, Optional
 
 import pdfplumber
 import streamlit as st
 from openai import OpenAI
+from openai import OpenAIError
 
 # Dodane importy dla bazy danych
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, func
 from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
 
-# ──────────────────────── 0. Konfiguracja ────────────────────────
+# ──────────────────────── 0. Custom Exceptions ────────────────────────
+class PDFProcessingError(Exception):
+    """Błąd podczas przetwarzania pliku PDF"""
+    pass
+
+class DataExtractionError(Exception):
+    """Błąd podczas ekstrakcji danych"""
+    pass
+
+class DatabaseError(Exception):
+    """Błąd podczas operacji na bazie danych"""
+    pass
+
+class ValidationError(Exception):
+    """Błąd walidacji danych"""
+    pass
+
+# ──────────────────────── 1. Walidacja i bezpieczeństwo ────────────────────────
+class PDFValidator:
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+    MIN_FILE_SIZE = 100  # 100 bytes
+    
+    @staticmethod
+    def validate_pdf_file(pdf_bytes: bytes, filename: str) -> None:
+        """Waliduje plik PDF pod kątem bezpieczeństwa i poprawności"""
+        
+        # Sprawdź rozmiar pliku
+        if len(pdf_bytes) > PDFValidator.MAX_FILE_SIZE:
+            raise ValidationError(f"Plik {filename} jest za duży. Maksymalny rozmiar: {PDFValidator.MAX_FILE_SIZE // (1024*1024)}MB")
+        
+        if len(pdf_bytes) < PDFValidator.MIN_FILE_SIZE:
+            raise ValidationError(f"Plik {filename} jest za mały lub uszkodzony")
+        
+        # Sprawdź czy to rzeczywiście PDF
+        if not pdf_bytes.startswith(b'%PDF'):
+            raise ValidationError(f"Plik {filename} nie jest prawidłowym plikiem PDF")
+        
+        # Sprawdź rozszerzenie pliku
+        if not filename.lower().endswith('.pdf'):
+            raise ValidationError(f"Nieprawidłowe rozszerzenie pliku. Oczekiwano .pdf, otrzymano: {Path(filename).suffix}")
+
+# ──────────────────────── 2. Konfiguracja ────────────────────────
 OPENAI_MODEL = "gpt-3.5-turbo-1106"        # 4o można też, ale drożej
 REGEX_FIELDS: Dict[str, Dict] = {
     "customer_name": {
@@ -34,9 +77,8 @@ REGEX_FIELDS: Dict[str, Dict] = {
         "patterns": [r"Claim Amount[:\s]*\$?([\d,]+\.\d{2})"],
     },
 }
-# dodaj własne pola, regexy lub zamień na yaml / json konfig.
 
-# Dodana konfiguracja bazy danych
+# ──────────────────────── 3. Database Models ────────────────────────
 Base = declarative_base()
 
 class Extraction(Base):
@@ -51,82 +93,181 @@ class Extraction(Base):
 
 @st.cache_resource
 def get_db_session():
-    engine = create_engine("sqlite:///extractions.db", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+    try:
+        engine = create_engine("sqlite:///extractions.db", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+    except Exception as e:
+        raise DatabaseError(f"Błąd inicjalizacji bazy danych: {str(e)}")
 
-# ──────────────────────── 1. Extractor classic ─────────────────────
+# ──────────────────────── 4. Extractor classic ─────────────────────
 class ClassicExtractor:
     def __init__(self, config: Dict[str, Dict]):
-        self.cfg = {
-            k: [re.compile(p, re.I) for p in v["patterns"]] for k, v in config.items()
-        }
+        try:
+            self.cfg = {
+                k: [re.compile(p, re.I) for p in v["patterns"]] for k, v in config.items()
+            }
+        except re.error as e:
+            raise DataExtractionError(f"Błąd w wyrażeniu regularnym: {str(e)}")
 
     @staticmethod
     def extract_text(pdf_bytes: bytes) -> str:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+        """Ekstraktuje tekst z PDF z obsługą błędów"""
+        try:
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                if not pdf.pages:
+                    raise PDFProcessingError("PDF nie zawiera żadnych stron")
+                
+                text_parts = []
+                for i, page in enumerate(pdf.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_parts.append(page_text)
+                    except Exception as e:
+                        st.warning(f"⚠️ Nie udało się przetworzyć strony {i+1}: {str(e)}")
+                        continue
+                
+                if not text_parts:
+                    raise PDFProcessingError("Nie udało się wyekstraktować tekstu z żadnej strony PDF")
+                
+                return "\n".join(text_parts)
+                
+        except Exception as e:
+            if isinstance(e, PDFProcessingError):
+                raise
+            raise PDFProcessingError(f"Błąd podczas czytania PDF: {str(e)}")
 
     def run(self, text: str, selected_fields: List[str] = None) -> Dict[str, str]:
-        out: Dict[str, str] = {}
-        fields_to_extract = selected_fields if selected_fields else self.cfg.keys()
+        """Uruchamia ekstrakcję z obsługą błędów"""
+        if not text or not text.strip():
+            raise DataExtractionError("Brak tekstu do przetworzenia")
         
-        for key in fields_to_extract:
-            if key in self.cfg:
+        try:
+            out: Dict[str, str] = {}
+            fields_to_extract = selected_fields if selected_fields else self.cfg.keys()
+            
+            for key in fields_to_extract:
+                if key not in self.cfg:
+                    st.warning(f"⚠️ Nieznane pole: {key}")
+                    continue
+                    
                 for pat in self.cfg[key]:
-                    if m := pat.search(text):
-                        out[key] = m.group(1).strip()
-                        break
-        return out
+                    try:
+                        if m := pat.search(text):
+                            out[key] = m.group(1).strip()
+                            break
+                    except Exception as e:
+                        st.warning(f"⚠️ Błąd podczas przetwarzania pola '{key}': {str(e)}")
+                        continue
+            
+            return out
+            
+        except Exception as e:
+            raise DataExtractionError(f"Błąd podczas ekstrakcji klasycznej: {str(e)}")
 
 
-# ──────────────────────── 2. Extractor AI ─────────────────────────
+# ──────────────────────── 5. Extractor AI ─────────────────────────
 class AIExtractor:
     def __init__(self, api_key: str):
-        self.cli = OpenAI(api_key=api_key)
+        if not api_key:
+            raise DataExtractionError("Brak klucza API OpenAI")
+        
+        try:
+            self.cli = OpenAI(api_key=api_key)
+        except Exception as e:
+            raise DataExtractionError(f"Błąd inicjalizacji klienta OpenAI: {str(e)}")
 
-    # – internal helper
     def _chat(self, messages: List[Dict], **kw) -> str:
-        r = self.cli.chat.completions.create(
-            model=OPENAI_MODEL, messages=messages, temperature=0, **kw
-        )
-        return r.choices[0].message.content.strip()
+        """Wywołanie API z obsługą błędów"""
+        try:
+            r = self.cli.chat.completions.create(
+                model=OPENAI_MODEL, messages=messages, temperature=0, **kw
+            )
+            if not r.choices or not r.choices[0].message.content:
+                raise DataExtractionError("OpenAI zwróciło pustą odpowiedź")
+            
+            return r.choices[0].message.content.strip()
+            
+        except OpenAIError as e:
+            raise DataExtractionError(f"Błąd API OpenAI: {str(e)}")
+        except Exception as e:
+            raise DataExtractionError(f"Nieoczekiwany błąd podczas wywołania AI: {str(e)}")
 
-    # step 1 – szybkie wykrycie etykiet
     def discover(self, text: str, max_labels: int = 15) -> List[str]:
-        prompt = (
-            "Return comma-separated labels (no values) that look like form-field names "
-            f"in the document below (≤{max_labels}).\n\n{text[:3000]}"
-        )
-        raw = self._chat(
-            [
-                {"role": "system", "content": "You are PDF-data assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=300,
-        )
-        return [l.strip() for l in raw.split(",") if 2 < len(l.strip()) < 40][:max_labels]
+        """Odkrywa etykiety z obsługą błędów"""
+        if not text or not text.strip():
+            raise DataExtractionError("Brak tekstu do analizy")
+        
+        try:
+            prompt = (
+                "Return comma-separated labels (no values) that look like form-field names "
+                f"in the document below (≤{max_labels}).\n\n{text[:3000]}"
+            )
+            raw = self._chat(
+                [
+                    {"role": "system", "content": "You are PDF-data assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=300,
+            )
+            
+            if not raw:
+                return []
+            
+            labels = [l.strip() for l in raw.split(",") if 2 < len(l.strip()) < 40]
+            return labels[:max_labels]
+            
+        except Exception as e:
+            if isinstance(e, DataExtractionError):
+                raise
+            raise DataExtractionError(f"Błąd podczas odkrywania etykiet: {str(e)}")
 
-    # step 2 – dokładna ekstrakcja wybranych pól
     def extract(self, text: str, fields: List[str]) -> Dict[str, str]:
-        prompt = (
-            f"Extract: {', '.join(fields)}\n\n"
-            "Return ONLY compact JSON {\"Field\":\"Value\"}. "
-            "If a field is missing, set null.\n\n"
-            + text[:20_000]
-        )
-        raw = self._chat(
-            [
-                {"role": "system", "content": "You are data-extraction engine."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=800,
-        )
-        m = re.search(r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0)) if m else {}
+        """Ekstraktuje dane z obsługą błędów"""
+        if not text or not text.strip():
+            raise DataExtractionError("Brak tekstu do przetworzenia")
+        
+        if not fields:
+            raise DataExtractionError("Brak pól do ekstrakcji")
+        
+        try:
+            prompt = (
+                f"Extract: {', '.join(fields)}\n\n"
+                "Return ONLY compact JSON {\"Field\":\"Value\"}. "
+                "If a field is missing, set null.\n\n"
+                + text[:20_000]
+            )
+            raw = self._chat(
+                [
+                    {"role": "system", "content": "You are data-extraction engine."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=800,
+            )
+            
+            # Znajdź JSON w odpowiedzi
+            m = re.search(r"\{.*\}", raw, re.S)
+            if not m:
+                raise DataExtractionError("AI nie zwróciło prawidłowego JSON-a")
+            
+            try:
+                result = json.loads(m.group(0))
+                if not isinstance(result, dict):
+                    raise DataExtractionError("AI zwróciło nieprawidłowy format danych")
+                
+                return result
+                
+            except json.JSONDecodeError as e:
+                raise DataExtractionError(f"Błąd parsowania JSON z AI: {str(e)}")
+                
+        except Exception as e:
+            if isinstance(e, DataExtractionError):
+                raise
+            raise DataExtractionError(f"Błąd podczas ekstrakcji AI: {str(e)}")
 
 
-# ──────────────────────── 3. UI Streamlit ─────────────────────────
+# ──────────────────────── 6. UI Streamlit ─────────────────────────
 st.set_page_config(page_title="PDF Extractor", layout="wide")
 st.title("📄 PDF Extractor — Classic vs AI")
 
@@ -140,12 +281,34 @@ up = st.file_uploader("Wgraj PDF", type="pdf")
 if not up:
     st.stop()
 
-pdf_bytes = up.read()
-text = ClassicExtractor.extract_text(pdf_bytes)  # staticmethod call
-file_hash = sha256(pdf_bytes).hexdigest()[:6]
+# ──────────────────────── 7. Główny proces z error handling ─────────────────────
+try:
+    # Wczytaj i zwaliduj plik
+    pdf_bytes = up.read()
+    PDFValidator.validate_pdf_file(pdf_bytes, up.name)
+    
+    # Ekstraktuj tekst
+    with st.spinner("Przetwarzanie PDF..."):
+        text = ClassicExtractor.extract_text(pdf_bytes)
+    
+    file_hash = sha256(pdf_bytes).hexdigest()[:6]
+    
+    # Inicjalizacja sesji bazy danych
+    try:
+        session = get_db_session()
+    except DatabaseError as e:
+        st.error(f"❌ {str(e)}")
+        st.stop()
 
-# Dodana inicjalizacja sesji bazy danych
-session = get_db_session()
+except ValidationError as e:
+    st.error(f"❌ Błąd walidacji: {str(e)}")
+    st.stop()
+except PDFProcessingError as e:
+    st.error(f"❌ {str(e)}")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Nieoczekiwany błąd: {str(e)}")
+    st.stop()
 
 # ───────────────────── Classic flow ───────────────────────────────
 if mode.startswith("Classic"):
@@ -162,76 +325,107 @@ if mode.startswith("Classic"):
             selected.append(field_key)
 
     if st.button("Extract selected fields"):
-        classic = ClassicExtractor(REGEX_FIELDS)
-        data = classic.run(text, selected)
-        
-        if data:
-            st.success("Ekstrakcja zakończona")
-            for k, v in data.items():
-                st.write(f"**{REGEX_FIELDS[k]['display']}**: {v}")
-            
-            # Dodany zapis do bazy danych
-            record = Extraction(
-                filename=up.name,
-                file_hash=file_hash,
-                extraction_method="classic",
-                extracted_data=json.dumps(data, ensure_ascii=False)
-            )
-            session.add(record)
-            session.commit()
-            st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
-            
-            # Dodane pobieranie JSON
-            st.download_button(
-                "💾 Pobierz JSON",
-                json.dumps(data, ensure_ascii=False, indent=2),
-                file_name=f"{Path(up.name).stem}_{file_hash}.json",
-                mime="application/json",
-            )
-        else:
-            st.warning("Żadne z wybranych pól nie zostało znalezione.")
+        try:
+            with st.spinner("Ekstraktowanie danych..."):
+                classic = ClassicExtractor(REGEX_FIELDS)
+                data = classic.run(text, selected)
+                
+                if data:
+                    st.success("Ekstrakcja zakończona")
+                    for k, v in data.items():
+                        display_name = REGEX_FIELDS.get(k, {}).get('display', k)
+                        st.write(f"**{display_name}**: {v}")
+                    
+                    # Zapis do bazy danych z obsługą błędów
+                    try:
+                        record = Extraction(
+                            filename=up.name,
+                            file_hash=file_hash,
+                            extraction_method="classic",
+                            extracted_data=json.dumps(data, ensure_ascii=False)
+                        )
+                        session.add(record)
+                        session.commit()
+                        st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
+                    except SQLAlchemyError as e:
+                        st.error(f"❌ Błąd zapisu do bazy: {str(e)}")
+                        session.rollback()
+                    
+                    # Pobieranie JSON
+                    st.download_button(
+                        "💾 Pobierz JSON",
+                        json.dumps(data, ensure_ascii=False, indent=2),
+                        file_name=f"{Path(up.name).stem}_{file_hash}.json",
+                        mime="application/json",
+                    )
+                else:
+                    st.warning("Żadne z wybranych pól nie zostało znalezione.")
+                    
+        except DataExtractionError as e:
+            st.error(f"❌ {str(e)}")
+        except Exception as e:
+            st.error(f"❌ Nieoczekiwany błąd podczas ekstrakcji: {str(e)}")
 
 
 # ───────────────────── AI flow ────────────────────────────────────
 else:
-    api = AIExtractor(os.getenv("OPENAI_API_KEY"))
-    st.header("🤖 AI Quick-scan")
+    try:
+        api = AIExtractor(os.getenv("OPENAI_API_KEY"))
+        st.header("🤖 AI Quick-scan")
 
-    labels = api.discover(text)
-    if not labels:
-        st.warning("Model nie zidentyfikował etykiet.")
-        st.stop()
-
-    # checkboxy wyboru etykiet
-    cols = st.columns(3)
-    selected: List[str] = []
-    for i, lab in enumerate(labels):
-        if cols[i % 3].checkbox(lab, True):
-            selected.append(lab)
-
-    if st.button("Extract selected fields"):
-        result = api.extract(text, selected)
-        if not result:
-            st.error("Brak danych—model nie zwrócił JSON-a.")
+        with st.spinner("Skanowanie dokumentu..."):
+            labels = api.discover(text)
+            
+        if not labels:
+            st.warning("Model nie zidentyfikował etykiet.")
             st.stop()
 
-        st.success("Ekstrakcja zakończona")
-        st.json(result)
-        
-        # Dodany zapis do bazy danych dla AI
-        record = Extraction(
-            filename=up.name,
-            file_hash=file_hash,
-            extraction_method="ai",
-            extracted_data=json.dumps(result, ensure_ascii=False)
-        )
-        session.add(record)
-        session.commit()
-        st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
-        
-        st.download_button(
-            "💾 Pobierz JSON",
-            json.dumps(result, ensure_ascii=False, indent=2),
-            file_name=f"{Path(up.name).stem}_{file_hash}.json",
-            mime="application/json",
-        )
+        # checkboxy wyboru etykiet
+        cols = st.columns(3)
+        selected: List[str] = []
+        for i, lab in enumerate(labels):
+            if cols[i % 3].checkbox(lab, True):
+                selected.append(lab)
+
+        if st.button("Extract selected fields"):
+            try:
+                with st.spinner("Ekstraktowanie danych przez AI..."):
+                    result = api.extract(text, selected)
+                    
+                    if result:
+                        st.success("Ekstrakcja zakończona")
+                        st.json(result)
+                        
+                        # Zapis do bazy danych z obsługą błędów
+                        try:
+                            record = Extraction(
+                                filename=up.name,
+                                file_hash=file_hash,
+                                extraction_method="ai",
+                                extracted_data=json.dumps(result, ensure_ascii=False)
+                            )
+                            session.add(record)
+                            session.commit()
+                            st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
+                        except SQLAlchemyError as e:
+                            st.error(f"❌ Błąd zapisu do bazy: {str(e)}")
+                            session.rollback()
+                        
+                        st.download_button(
+                            "💾 Pobierz JSON",
+                            json.dumps(result, ensure_ascii=False, indent=2),
+                            file_name=f"{Path(up.name).stem}_{file_hash}.json",
+                            mime="application/json",
+                        )
+                    else:
+                        st.warning("Nie udało się wyekstraktować żadnych danych.")
+                        
+            except DataExtractionError as e:
+                st.error(f"❌ {str(e)}")
+            except Exception as e:
+                st.error(f"❌ Nieoczekiwany błąd podczas ekstrakcji AI: {str(e)}")
+                
+    except DataExtractionError as e:
+        st.error(f"❌ {str(e)}")
+    except Exception as e:
+        st.error(f"❌ Nieoczekiwany błąd inicjalizacji AI: {str(e)}")
