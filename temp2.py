@@ -14,7 +14,8 @@ from openai import OpenAI
 
 # Dodane importy dla bazy danych
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, func
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
+Base = declarative_base()
 from sqlalchemy.orm import sessionmaker
 
 # ──────────────────────── 0. Konfiguracja ────────────────────────
@@ -66,13 +67,16 @@ class ClassicExtractor:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             return "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-    def run(self, text: str) -> Dict[str, str]:
+    def run(self, text: str, selected_fields: List[str] = None) -> Dict[str, str]:
         out: Dict[str, str] = {}
-        for key, pats in self.cfg.items():
-            for pat in pats:
-                if m := pat.search(text):
-                    out[key] = m.group(1).strip()
-                    break
+        fields_to_extract = selected_fields if selected_fields else self.cfg.keys()
+        
+        for key in fields_to_extract:
+            if key in self.cfg:
+                for pat in self.cfg[key]:
+                    if m := pat.search(text):
+                        out[key] = m.group(1).strip()
+                        break
         return out
 
 
@@ -145,33 +149,47 @@ session = get_db_session()
 
 # ───────────────────── Classic flow ───────────────────────────────
 if mode.startswith("Classic"):
-    st.header("🔤 Wynik klasyczny (regex)")
-    classic = ClassicExtractor(REGEX_FIELDS)
-    data = classic.run(text)
-    if data:
-        for k, v in data.items():
-            st.write(f"**{REGEX_FIELDS[k]['display']}**: {v}")
+    st.header("🔤 Dostępne pola (regex)")
+    
+    # Pokaż checkboxy dla dostępnych pól
+    cols = st.columns(3)
+    selected: List[str] = []
+    field_keys = list(REGEX_FIELDS.keys())
+    
+    for i, field_key in enumerate(field_keys):
+        display_name = REGEX_FIELDS[field_key]['display']
+        if cols[i % 3].checkbox(display_name, True, key=f"classic_{field_key}"):
+            selected.append(field_key)
+
+    if st.button("Extract selected fields"):
+        classic = ClassicExtractor(REGEX_FIELDS)
+        data = classic.run(text, selected)
         
-        # Dodany zapis do bazy danych
-        record = Extraction(
-            filename=up.name,
-            file_hash=file_hash,
-            extraction_method="classic",
-            extracted_data=json.dumps(data, ensure_ascii=False)
-        )
-        session.add(record)
-        session.commit()
-        st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
-        
-        # Dodane pobieranie JSON
-        st.download_button(
-            "💾 Pobierz JSON",
-            json.dumps(data, ensure_ascii=False, indent=2),
-            file_name=f"{Path(up.name).stem}_{file_hash}.json",
-            mime="application/json",
-        )
-    else:
-        st.warning("Żadne z konfigurowanych pól nie zostało znalezione.")
+        if data:
+            st.success("Ekstrakcja zakończona")
+            for k, v in data.items():
+                st.write(f"**{REGEX_FIELDS[k]['display']}**: {v}")
+            
+            # Dodany zapis do bazy danych
+            record = Extraction(
+                filename=up.name,
+                file_hash=file_hash,
+                extraction_method="classic",
+                extracted_data=json.dumps(data, ensure_ascii=False)
+            )
+            session.add(record)
+            session.commit()
+            st.success(f"✅ Dane zapisane do bazy (ID: {record.id})")
+            
+            # Dodane pobieranie JSON
+            st.download_button(
+                "💾 Pobierz JSON",
+                json.dumps(data, ensure_ascii=False, indent=2),
+                file_name=f"{Path(up.name).stem}_{file_hash}.json",
+                mime="application/json",
+            )
+        else:
+            st.warning("Żadne z wybranych pól nie zostało znalezione.")
 
 
 # ───────────────────── AI flow ────────────────────────────────────
