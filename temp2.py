@@ -1,6 +1,6 @@
 # app.py – Streamlit demo z dwoma trybami wyciągania danych z PDF-ów:
 # 1) Classic (Regex)   2) AI (GPT-3.5 quick-scan → detailed)
-# zależności: streamlit, pdfplumber, openai, sqlalchemy
+# zależności: streamlit, pdfplumber, openai, sqlalchemy, concurrent.futures
 
 from __future__ import annotations
 import io, json, os, re
@@ -19,6 +19,8 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
+
+import concurrent.futures  # DODANE: dla batch processing
 
 # ──────────────────────── 0. Custom Exceptions ────────────────────────
 class PDFProcessingError(Exception):
@@ -97,6 +99,17 @@ def get_db_session():
         engine = create_engine("sqlite:///extractions.db", connect_args={"check_same_thread": False})
         Base.metadata.create_all(engine)
         return sessionmaker(bind=engine)()
+    except Exception as e:
+        raise DatabaseError(f"Błąd inicjalizacji bazy danych: {str(e)}")
+
+# DODANE: Dla operacji wielowątkowych (bez cache)
+def create_db_session():
+    """Tworzy nową sesję dla każdego wywołania - bezpieczne dla wielu wątków"""
+    try:
+        engine = create_engine("sqlite:///extractions.db", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        return Session()
     except Exception as e:
         raise DatabaseError(f"Błąd inicjalizacji bazy danych: {str(e)}")
 
@@ -277,11 +290,105 @@ if mode.startswith("AI") and not os.getenv("OPENAI_API_KEY"):
     st.error("⚠️ Ustaw zmienną OPENAI_API_KEY lub dodaj ją w .secrets.toml")
     st.stop()
 
-up = st.file_uploader("Wgraj PDF", type="pdf")
+# ──────────────────────── *** BATCH PDF SECTION *** ────────────────────────────
+st.header("📦 Batch PDF Extraction (asynchroniczne zapisywanie do bazy)")
+
+uploaded_files = st.file_uploader(
+    "Wgraj wiele plików PDF",
+    type="pdf",
+    accept_multiple_files=True,
+    key="batch_uploader"
+)
+
+if uploaded_files:
+    st.subheader("🔤 Dostępne pola do batch extraction")
+    batch_field_keys = list(REGEX_FIELDS.keys())
+    batch_cols = st.columns(3)
+    batch_selected_fields: List[str] = []
+    for i, field_key in enumerate(batch_field_keys):
+        display_name = REGEX_FIELDS[field_key]['display']
+        if batch_cols[i % 3].checkbox(display_name, True, key=f"batch_{field_key}"):
+            batch_selected_fields.append(field_key)
+
+    if not batch_selected_fields:
+        st.warning("Wybierz co najmniej jedno pole do ekstrakcji.")
+    
+    if st.button("Extract All (async batch & save to DB)"):
+        batch_results = []
+
+        def process_pdf_and_save(up, selected_fields, mode):
+            try:
+                # Każdy wątek tworzy NOWĄ sesję - bez cache!
+                session = create_db_session()
+                
+                pdf_bytes = up.read()
+                PDFValidator.validate_pdf_file(pdf_bytes, up.name)
+                text = ClassicExtractor.extract_text(pdf_bytes)
+                file_hash = sha256(pdf_bytes).hexdigest()[:6]
+                
+                if mode.startswith("Classic"):
+                    extractor = ClassicExtractor(REGEX_FIELDS)
+                    data = extractor.run(text, selected_fields)
+                else:
+                    extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
+                    data = extractor.extract(text, selected_fields)
+                
+                record = Extraction(
+                    filename=up.name,
+                    file_hash=file_hash,
+                    extraction_method= "classic" if mode.startswith("Classic") else "ai",
+                    extracted_data=json.dumps(data, ensure_ascii=False)
+                )
+                session.add(record)
+                session.commit()
+                
+                return {
+                    "file": up.name,
+                    "result": data,
+                    "db_id": record.id
+                }
+                
+            except Exception as e:
+                try:
+                    session.rollback()
+                except:
+                    pass
+                return {
+                    "file": up.name,
+                    "error": str(e)
+                }
+
+        if batch_selected_fields:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(process_pdf_and_save, up, batch_selected_fields, mode)
+                    for up in uploaded_files
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    batch_results.append(future.result())
+
+            st.subheader("Wyniki batch extraction")
+            for br in batch_results:
+                st.write(f"**Plik:** {br['file']}")
+                if "result" in br:
+                    st.json(br["result"])
+                    st.write(f"Zapisano w bazie (ID: {br['db_id']})")
+                else:
+                    st.error(f"Błąd: {br['error']}")
+
+            st.download_button(
+                "💾 Pobierz batch JSON",
+                json.dumps(batch_results, ensure_ascii=False, indent=2),
+                file_name="batch_results.json",
+                mime="application/json",
+            )
+
+# ──────────────────────── 7. Główny proces z error handling ─────────────────────
+# Pojedynczy plik – nie zmieniane
+up = st.file_uploader("Wgraj PDF", type="pdf", key="single_uploader")
 if not up:
     st.stop()
 
-# ──────────────────────── 7. Główny proces z error handling ─────────────────────
 try:
     # Wczytaj i zwaliduj plik
     pdf_bytes = up.read()
@@ -324,7 +431,7 @@ if mode.startswith("Classic"):
         if cols[i % 3].checkbox(display_name, True, key=f"classic_{field_key}"):
             selected.append(field_key)
 
-    if st.button("Extract selected fields"):
+    if st.button("Extract selected fields", key="single_extract_button"):
         try:
             with st.spinner("Ekstraktowanie danych..."):
                 classic = ClassicExtractor(REGEX_FIELDS)
@@ -384,10 +491,10 @@ else:
         cols = st.columns(3)
         selected: List[str] = []
         for i, lab in enumerate(labels):
-            if cols[i % 3].checkbox(lab, True):
+            if cols[i % 3].checkbox(lab, True, key=f"ai_field_{lab}"):
                 selected.append(lab)
 
-        if st.button("Extract selected fields"):
+        if st.button("Extract selected fields", key="single_ai_extract_button"):
             try:
                 with st.spinner("Ekstraktowanie danych przez AI..."):
                     result = api.extract(text, selected)
