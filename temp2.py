@@ -1,6 +1,6 @@
 # app.py – Streamlit demo z dwoma trybami wyciągania danych z PDF-ów:
 # 1) Classic (Regex)   2) AI (GPT-3.5 quick-scan → detailed)
-# zależności: streamlit, pdfplumber, openai, sqlalchemy, concurrent.futures
+# zależności: streamlit, pdfplumber, openai, sqlalchemy, concurrent.futures, langfuse
 
 from __future__ import annotations
 import io, json, os, re
@@ -8,9 +8,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import pdfplumber
 import streamlit as st
-from openai import OpenAI
+from langfuse.openai import OpenAI
 from openai import OpenAIError
 
 # Dodane importy dla bazy danych
@@ -292,6 +295,10 @@ class AIExtractor:
 # ──────────────────────── 6. UI Streamlit ─────────────────────────
 st.set_page_config(page_title="PDF Extractor", layout="wide")
 st.title("📄 PDF Extractor — Classic vs AI")
+
+# Langfuse monitoring info
+if os.getenv("LANGFUSE_SECRET_KEY"):
+    st.info("🔍 Langfuse monitoring aktywny")
 
 mode = st.radio("Tryb parsera:", ["Classic (Regex)", "AI (GPT-3.5)"], horizontal=True)
 
