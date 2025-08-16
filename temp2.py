@@ -19,6 +19,7 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import StaticPool  # DODANE: dla lepszego poolingu SQLite
 
 import concurrent.futures  # DODANE: dla batch processing
 
@@ -102,11 +103,19 @@ def get_db_session():
     except Exception as e:
         raise DatabaseError(f"Błąd inicjalizacji bazy danych: {str(e)}")
 
-# DODANE: Dla operacji wielowątkowych (bez cache)
+# POPRAWIONE: Dla operacji wielowątkowych z lepszą konfiguracją SQLite
 def create_db_session():
     """Tworzy nową sesję dla każdego wywołania - bezpieczne dla wielu wątków"""
     try:
-        engine = create_engine("sqlite:///extractions.db", connect_args={"check_same_thread": False})
+        engine = create_engine(
+            "sqlite:///extractions.db", 
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 20  # Timeout dla SQLite
+            },
+            poolclass=StaticPool,  # StaticPool dla SQLite
+            echo=False  # Ustaw na True żeby zobaczyć SQL queries w logach
+        )
         Base.metadata.create_all(engine)
         Session = sessionmaker(bind=engine)
         return Session()
@@ -313,75 +322,74 @@ if uploaded_files:
     if not batch_selected_fields:
         st.warning("Wybierz co najmniej jedno pole do ekstrakcji.")
     
+    # POPRAWIONE: Sekwencyjne przetwarzanie z jedną sesją dla lepszej niezawodności
     if st.button("Extract All (async batch & save to DB)"):
         batch_results = []
-
-        def process_pdf_and_save(up, selected_fields, mode):
-            try:
-                # Każdy wątek tworzy NOWĄ sesję - bez cache!
-                session = create_db_session()
-                
-                pdf_bytes = up.read()
-                PDFValidator.validate_pdf_file(pdf_bytes, up.name)
-                text = ClassicExtractor.extract_text(pdf_bytes)
-                file_hash = sha256(pdf_bytes).hexdigest()[:6]
-                
-                if mode.startswith("Classic"):
-                    extractor = ClassicExtractor(REGEX_FIELDS)
-                    data = extractor.run(text, selected_fields)
-                else:
-                    extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
-                    data = extractor.extract(text, selected_fields)
-                
-                record = Extraction(
-                    filename=up.name,
-                    file_hash=file_hash,
-                    extraction_method= "classic" if mode.startswith("Classic") else "ai",
-                    extracted_data=json.dumps(data, ensure_ascii=False)
-                )
-                session.add(record)
-                session.commit()
-                
-                return {
-                    "file": up.name,
-                    "result": data,
-                    "db_id": record.id
-                }
-                
-            except Exception as e:
+        
+        # Jedna sesja dla całego batcha
+        session = create_db_session()
+        
+        try:
+            for up in uploaded_files:
                 try:
-                    session.rollback()
-                except:
-                    pass
-                return {
-                    "file": up.name,
-                    "error": str(e)
-                }
+                    pdf_bytes = up.read()
+                    PDFValidator.validate_pdf_file(pdf_bytes, up.name)
+                    text = ClassicExtractor.extract_text(pdf_bytes)
+                    file_hash = sha256(pdf_bytes).hexdigest()[:6]
+                    
+                    if mode.startswith("Classic"):
+                        extractor = ClassicExtractor(REGEX_FIELDS)
+                        data = extractor.run(text, batch_selected_fields)
+                    else:
+                        extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
+                        data = extractor.extract(text, batch_selected_fields)
+                    
+                    record = Extraction(
+                        filename=up.name,
+                        file_hash=file_hash,
+                        extraction_method= "classic" if mode.startswith("Classic") else "ai",
+                        extracted_data=json.dumps(data, ensure_ascii=False)
+                    )
+                    session.add(record)
+                    session.flush()  # Flush bez commit
+                    
+                    batch_results.append({
+                        "file": up.name,
+                        "result": data,
+                        "db_id": record.id
+                    })
+                    st.write(f"✅ Przetworzono: {up.name}")  # Debug info
+                    
+                except Exception as e:
+                    batch_results.append({
+                        "file": up.name,
+                        "error": str(e)
+                    })
+                    st.write(f"❌ Błąd w {up.name}: {str(e)}")  # Debug info
+            
+            # Jeden commit na koniec
+            session.commit()
+            st.success("✅ Wszystkie pliki przetworzone i zapisane!")
+            
+        except Exception as e:
+            session.rollback()
+            st.error(f"❌ Błąd batch processing: {str(e)}")
 
-        if batch_selected_fields:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                futures = [
-                    executor.submit(process_pdf_and_save, up, batch_selected_fields, mode)
-                    for up in uploaded_files
-                ]
-                for future in concurrent.futures.as_completed(futures):
-                    batch_results.append(future.result())
+        st.subheader("Wyniki batch extraction")
+        for br in batch_results:
+            st.write(f"**Plik:** {br['file']}")
+            if "result" in br:
+                st.json(br["result"])
+                st.write(f"Zapisano w bazie (ID: {br['db_id']})")
+            else:
+                st.error(f"Błąd: {br['error']}")
 
-            st.subheader("Wyniki batch extraction")
-            for br in batch_results:
-                st.write(f"**Plik:** {br['file']}")
-                if "result" in br:
-                    st.json(br["result"])
-                    st.write(f"Zapisano w bazie (ID: {br['db_id']})")
-                else:
-                    st.error(f"Błąd: {br['error']}")
-
-            st.download_button(
-                "💾 Pobierz batch JSON",
-                json.dumps(batch_results, ensure_ascii=False, indent=2),
-                file_name="batch_results.json",
-                mime="application/json",
-            )
+        st.download_button(
+            "💾 Pobierz batch JSON",
+            json.dumps(batch_results, ensure_ascii=False, indent=2),
+            file_name="batch_results.json",
+            mime="application/json",
+        )
 
 # ──────────────────────── 7. Główny proces z error handling ─────────────────────
 # Pojedynczy plik – nie zmieniane
