@@ -21,21 +21,35 @@ pdf-parser/
 │   ├── pdf_parser/
 │   │   ├── __init__.py          # Main package exports
 │   │   ├── config/              # Configuration management
-│   │   │   └── __init__.py      # App settings and constants
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   └── config.py        # App settings and constants
 │   │   ├── exceptions/          # Custom exceptions
-│   │   │   └── __init__.py      # Error handling classes
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   └── exceptions.py    # Error handling classes
 │   │   ├── models/              # Database models
-│   │   │   └── __init__.py      # SQLAlchemy model definitions
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   └── models.py        # SQLAlchemy model definitions
 │   │   ├── database/            # Database operations
-│   │   │   └── __init__.py      # Connection management and repositories
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   ├── database_manager.py    # Connection management
+│   │   │   └── extraction_repository.py # Data repository
 │   │   ├── validators/          # File validation
-│   │   │   └── __init__.py      # PDF validation utilities
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   └── validators.py    # PDF validation utilities
 │   │   ├── extractors/          # Data extraction engines
-│   │   │   └── __init__.py      # Text and data extractors
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   ├── text_extractor.py      # PDF text extraction
+│   │   │   ├── data_extractor.py      # Base data extractor
+│   │   │   ├── classic_extractor.py   # Regex-based extraction
+│   │   │   └── ai_extractor.py        # AI-powered extraction
 │   │   ├── processors/          # Processing workflows
-│   │   │   └── __init__.py      # PDF and batch processors
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   ├── pdf_processor.py       # Single PDF processing
+│   │   │   └── batch_processor.py     # Batch PDF processing
 │   │   └── ui/                  # User interface components
-│   │       └── __init__.py      # Streamlit UI components
+│   │       ├── __init__.py      # Module exports
+│   │       ├── field_selector.py     # Field selection UI
+│   │       └── ui_renderer.py        # Main UI renderer
 │   └── app.py                   # Main application entry point
 ├── tests/                       # Test suite
 │   ├── conftest.py             # Pytest configuration and fixtures
@@ -52,13 +66,37 @@ pdf-parser/
 
 The application follows a clean, modular architecture with clear separation of concerns:
 
-- **Configuration Layer**: Centralized settings and field definitions
-- **Exception Layer**: Custom exceptions for different error types
-- **Data Layer**: Models and database operations
-- **Validation Layer**: PDF file validation and security checks
-- **Extraction Layer**: Text extraction and data parsing (Regex + AI)
-- **Processing Layer**: Workflow orchestration and batch operations
-- **Presentation Layer**: Streamlit user interface components
+#### Core Modules
+
+- **Configuration Layer** (`config/`): 
+  - `config.py`: Centralized settings, model parameters, and field definitions
+
+- **Exception Layer** (`exceptions/`):
+  - `exceptions.py`: Custom exceptions for different error types and scenarios
+
+- **Data Layer** (`models/` + `database/`):
+  - `models.py`: SQLAlchemy model definitions for extraction results
+  - `database_manager.py`: Database connection and session management
+  - `extraction_repository.py`: Repository pattern for data persistence
+
+- **Validation Layer** (`validators/`):
+  - `validators.py`: PDF file validation, security checks, and format verification
+
+- **Extraction Layer** (`extractors/`):
+  - `text_extractor.py`: PDF text extraction using pdfplumber
+  - `data_extractor.py`: Abstract base class defining extraction interface
+  - `classic_extractor.py`: Regex-based pattern matching extraction
+  - `ai_extractor.py`: OpenAI GPT-powered intelligent extraction
+
+- **Processing Layer** (`processors/`):
+  - `pdf_processor.py`: Single PDF file processing workflow
+  - `batch_processor.py`: Batch processing with error handling and progress tracking
+
+- **Presentation Layer** (`ui/`):
+  - `ui_renderer.py`: Main Streamlit interface components
+  - `field_selector.py`: Reusable field selection UI components
+
+Each module is self-contained with its own `__init__.py` that exports the public API, ensuring clean imports and maintainable code organization.
 
 ## 🔧 Installation
 
@@ -114,7 +152,7 @@ The application will be available at `http://localhost:8501`
 #### 1. Classic Mode (Regex-based)
 - Uses predefined regular expressions to extract known field patterns
 - Fast and reliable for structured documents with consistent formatting
-- Configurable patterns in `src/pdf_parser/config/__init__.py`
+- Configurable patterns in `src/pdf_parser/config/config.py`
 - Default fields: Customer Name, Policy Number, Claim Amount
 
 #### 2. AI Mode (GPT-powered)
@@ -158,6 +196,64 @@ pytest tests/test_processors.py
 pytest -v
 ```
 
+### Programmatic Usage
+
+You can also use the PDF parser components programmatically:
+
+```python
+from src.pdf_parser.extractors import ClassicExtractor, AIExtractor, TextExtractor
+from src.pdf_parser.validators import PDFValidator
+from src.pdf_parser.processors import PDFProcessor
+from src.pdf_parser.database import DatabaseManager, ExtractionRepository
+
+# Setup database
+db_manager = DatabaseManager()
+repository = ExtractionRepository(db_manager)
+processor = PDFProcessor(repository)
+
+# Read PDF file
+with open("document.pdf", "rb") as f:
+    pdf_bytes = f.read()
+
+# Classic extraction
+classic_extractor = ClassicExtractor()
+data, file_hash = processor.process_file(
+    pdf_bytes, "document.pdf", classic_extractor, ["customer_name", "policy_number"]
+)
+
+# AI extraction (requires OpenAI API key)
+ai_extractor = AIExtractor("your-openai-api-key")
+ai_data, _ = processor.process_file(
+    pdf_bytes, "document.pdf", ai_extractor, ["customer_name", "policy_number"]
+)
+
+# Save results
+db_id = processor.save_extraction_result("document.pdf", file_hash, "classic", data)
+print(f"Saved extraction with ID: {db_id}")
+```
+
+### Individual Module Usage
+
+```python
+# Text extraction only
+from src.pdf_parser.extractors import TextExtractor
+
+with open("document.pdf", "rb") as f:
+    pdf_bytes = f.read()
+
+text = TextExtractor.extract_text(pdf_bytes)
+print("Extracted text:", text)
+
+# Validation only
+from src.pdf_parser.validators import PDFValidator
+
+try:
+    PDFValidator.validate_pdf_file(pdf_bytes, "document.pdf")
+    print("PDF is valid")
+except ValidationError as e:
+    print(f"Validation failed: {e}")
+```
+
 ### Test Coverage
 
 The test suite covers:
@@ -170,7 +266,7 @@ The test suite covers:
 
 ### Regex Fields Configuration
 
-Customize extraction patterns in `src/pdf_parser/config/__init__.py`:
+Customize extraction patterns in `src/pdf_parser/config/config.py`:
 
 ```python
 REGEX_FIELDS = {
@@ -190,6 +286,17 @@ Key configuration parameters:
 - `OPENAI_MODEL`: GPT model version (default: gpt-3.5-turbo-1106)
 - `DATABASE_URL`: SQLite database location
 
+### Module Structure Benefits
+
+The new modular structure provides several advantages:
+
+- **Maintainability**: Each module has a single responsibility
+- **Testability**: Individual components can be tested in isolation  
+- **Reusability**: Components can be imported and used independently
+- **Extensibility**: Easy to add new extractors, validators, or processors
+- **Code Organization**: Clear separation of concerns with logical grouping
+- **Import Efficiency**: Only import what you need from each module
+
 ## 🔍 Monitoring & Observability
 
 The application integrates with Langfuse for monitoring and observability:
@@ -203,21 +310,51 @@ The application integrates with Langfuse for monitoring and observability:
 
 ### Adding New Extractors
 
-1. Create extractor class inheriting from `DataExtractor`
-2. Implement the `extract` method
-3. Add to the extractor factory in `processors`
+1. Create a new Python file in `src/pdf_parser/extractors/` (e.g., `my_extractor.py`)
+2. Create extractor class inheriting from `DataExtractor` from `data_extractor.py`
+3. Implement the `extract` method with your custom logic
+4. Add import and export in `src/pdf_parser/extractors/__init__.py`
+5. Register in processors or use directly in your application
+
+Example:
+```python
+# src/pdf_parser/extractors/my_extractor.py
+from .data_extractor import DataExtractor
+
+class MyExtractor(DataExtractor):
+    def extract(self, text: str, fields: List[str]) -> Dict[str, str]:
+        # Your extraction logic here
+        pass
+```
 
 ### Adding New Validation Rules
 
-1. Add validation method to `PDFValidator`
+1. Add validation method to `PDFValidator` in `src/pdf_parser/validators/validators.py`
 2. Call from `validate_pdf_file` method
 3. Raise `ValidationError` for failures
+4. Add corresponding tests in `tests/test_validators.py`
 
-### Database Schema Changes
+### Adding New Database Models
 
-1. Modify models in `src/pdf_parser/models/`
-2. Update repository methods as needed
-3. Handle migrations for existing data
+1. Create model class in `src/pdf_parser/models/models.py`
+2. Add to exports in `src/pdf_parser/models/__init__.py`
+3. Create repository methods in appropriate repository file
+4. Handle database migrations for schema changes
+
+### Adding New UI Components
+
+1. Create component file in `src/pdf_parser/ui/` (e.g., `my_component.py`)
+2. Add to exports in `src/pdf_parser/ui/__init__.py`
+3. Import and use in `ui_renderer.py` or standalone
+
+### Module Development Guidelines
+
+- **Single Responsibility**: Each module should have one clear purpose
+- **Clean Imports**: Use `__init__.py` files to control public API
+- **Error Handling**: Use appropriate custom exceptions from `exceptions/`
+- **Configuration**: Store settings in `config/config.py`
+- **Testing**: Add comprehensive tests for new functionality
+- **Documentation**: Update docstrings and README as needed
 
 ## 🐛 Troubleshooting
 
@@ -271,18 +408,7 @@ For support, please:
 3. Create a new issue with detailed description
 4. Include error logs and system information
 
-## 🔄 Changelog
 
-### v1.0.0 (Current)
-- Initial release with dual extraction modes
-- Batch processing capabilities
-- Comprehensive test suite (96 tests, 86% coverage)
-- Streamlit web interface
-- Database persistence
-- Langfuse monitoring integration
-- Modular architecture with clean separation of concerns
-- Full error handling and validation
-- Docker-ready configuration
 
 ## ✅ Project Status
 
@@ -299,23 +425,51 @@ This project has been successfully restructured and is fully operational:
 
 ```
 pdf-parser/
-├── src/pdf_parser/           # Main application package
-│   ├── config/              # Configuration management
-│   ├── exceptions/          # Custom exceptions
-│   ├── models/              # SQLAlchemy models
-│   ├── database/            # Database operations
-│   ├── validators/          # PDF validation
-│   ├── extractors/          # Text & data extraction
-│   ├── processors/          # Processing workflows
-│   └── ui/                  # Streamlit components
-├── tests/                   # Comprehensive test suite
-└── validate_setup.py        # Setup validation script
+├── src/pdf_parser/                    # Main application package
+│   ├── __init__.py                   # Package exports
+│   ├── config/                       # Configuration management
+│   │   ├── __init__.py              # Module exports
+│   │   └── config.py                # Settings and constants
+│   ├── exceptions/                   # Custom exceptions
+│   │   ├── __init__.py              # Module exports
+│   │   └── exceptions.py            # Error classes
+│   ├── models/                       # Database models
+│   │   ├── __init__.py              # Module exports
+│   │   └── models.py                # SQLAlchemy models
+│   ├── database/                     # Database operations
+│   │   ├── __init__.py              # Module exports
+│   │   ├── database_manager.py      # Connection management
+│   │   └── extraction_repository.py # Data repository
+│   ├── validators/                   # PDF validation
+│   │   ├── __init__.py              # Module exports
+│   │   └── validators.py            # Validation logic
+│   ├── extractors/                   # Text & data extraction
+│   │   ├── __init__.py              # Module exports
+│   │   ├── text_extractor.py        # PDF text extraction
+│   │   ├── data_extractor.py        # Base extractor
+│   │   ├── classic_extractor.py     # Regex extraction
+│   │   └── ai_extractor.py          # AI extraction
+│   ├── processors/                   # Processing workflows
+│   │   ├── __init__.py              # Module exports
+│   │   ├── pdf_processor.py         # Single PDF processing
+│   │   └── batch_processor.py       # Batch processing
+│   └── ui/                          # Streamlit components
+│       ├── __init__.py              # Module exports
+│       ├── field_selector.py        # Field selection UI
+│       └── ui_renderer.py           # Main UI renderer
+├── tests/                           # Comprehensive test suite
+│   ├── conftest.py                  # Test configuration
+│   ├── test_validators.py           # Validator tests
+│   ├── test_extractors.py           # Extractor tests
+│   ├── test_database.py             # Database tests
+│   └── test_processors.py           # Processor tests
+└── validate_setup.py                # Setup validation script
 ```
 
 ### 🧪 Test Results
 
 - **96 tests** covering all modules
-- **86% code coverage** across the codebase
+- **88% code coverage** across the codebase
 - All tests passing ✅
 - Comprehensive fixtures and mocking
 

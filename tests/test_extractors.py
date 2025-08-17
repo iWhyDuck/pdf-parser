@@ -20,7 +20,7 @@ class TestTextExtractor:
 
     def test_extract_text_success(self, sample_pdf_bytes):
         """Test successful text extraction from PDF."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber:
             # Mock PDF structure
             mock_page = Mock()
             mock_page.extract_text.return_value = "Sample text from PDF"
@@ -39,7 +39,7 @@ class TestTextExtractor:
 
     def test_extract_text_multiple_pages(self, sample_pdf_bytes):
         """Test text extraction from multi-page PDF."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber:
             # Mock multiple pages
             mock_page1 = Mock()
             mock_page1.extract_text.return_value = "Page 1 content"
@@ -59,7 +59,7 @@ class TestTextExtractor:
 
     def test_extract_text_no_pages(self, sample_pdf_bytes):
         """Test text extraction from PDF with no pages."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber:
             mock_pdf = Mock()
             mock_pdf.pages = []
             mock_pdf.__enter__ = Mock(return_value=mock_pdf)
@@ -72,8 +72,8 @@ class TestTextExtractor:
 
     def test_extract_text_page_extraction_fails(self, sample_pdf_bytes):
         """Test handling of page extraction failures."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber, \
-             patch('src.pdf_parser.extractors.st') as mock_st:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber, \
+             patch('src.pdf_parser.extractors.text_extractor.st') as mock_st:
 
             # Mock page that fails extraction
             mock_page1 = Mock()
@@ -97,7 +97,7 @@ class TestTextExtractor:
 
     def test_extract_text_no_text_extracted(self, sample_pdf_bytes):
         """Test handling when no text can be extracted."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber:
             mock_page = Mock()
             mock_page.extract_text.return_value = None
 
@@ -113,7 +113,7 @@ class TestTextExtractor:
 
     def test_extract_text_pdf_open_fails(self, sample_pdf_bytes):
         """Test handling of PDF opening failures."""
-        with patch('src.pdf_parser.extractors.pdfplumber') as mock_pdfplumber:
+        with patch('src.pdf_parser.extractors.text_extractor.pdfplumber') as mock_pdfplumber:
             mock_pdfplumber.open.side_effect = Exception("Cannot open PDF")
 
             with pytest.raises(PDFProcessingError, match="PDF reading error"):
@@ -177,7 +177,7 @@ class TestClassicExtractor:
 
     def test_extract_unknown_field(self, classic_extractor, sample_text_content):
         """Test extraction with unknown field."""
-        with patch('src.pdf_parser.extractors.st') as mock_st:
+        with patch('src.pdf_parser.extractors.classic_extractor.st') as mock_st:
             result = classic_extractor.extract(sample_text_content, ["unknown_field"])
 
             assert result == {}
@@ -203,7 +203,7 @@ class TestClassicExtractor:
 
     def test_extract_field_value_regex_error(self, classic_extractor):
         """Test handling of regex errors during extraction."""
-        with patch('src.pdf_parser.extractors.st') as mock_st:
+        with patch('src.pdf_parser.extractors.classic_extractor.st') as mock_st:
             # Mock a regex that will cause an error
             mock_pattern = Mock()
             mock_pattern.search.side_effect = Exception("Regex error")
@@ -237,7 +237,7 @@ class TestAIExtractor:
 
     def test_init_success(self):
         """Test successful initialization with API key."""
-        with patch('src.pdf_parser.extractors.OpenAI') as mock_openai:
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI') as mock_openai:
             extractor = AIExtractor("test-api-key")
             mock_openai.assert_called_once_with(api_key="test-api-key")
 
@@ -251,7 +251,7 @@ class TestAIExtractor:
 
     def test_init_client_creation_error(self):
         """Test handling of OpenAI client creation errors."""
-        with patch('src.pdf_parser.extractors.OpenAI') as mock_openai:
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI') as mock_openai:
             mock_openai.side_effect = Exception("Client creation failed")
 
             with pytest.raises(DataExtractionError, match="OpenAI client initialization error"):
@@ -259,7 +259,7 @@ class TestAIExtractor:
 
     def test_chat_success(self, mock_openai_client):
         """Test successful OpenAI chat completion."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             messages = [{"role": "user", "content": "test message"}]
 
@@ -272,7 +272,7 @@ class TestAIExtractor:
         """Test handling of empty OpenAI response."""
         mock_openai_client.chat.completions.create.return_value.choices = []
 
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             messages = [{"role": "user", "content": "test message"}]
 
@@ -284,7 +284,7 @@ class TestAIExtractor:
         from openai import OpenAIError
         mock_openai_client.chat.completions.create.side_effect = OpenAIError("API Error")
 
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             messages = [{"role": "user", "content": "test message"}]
 
@@ -296,7 +296,7 @@ class TestAIExtractor:
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = \
             "Customer Name, Policy Number, Claim Amount"
 
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             result = extractor.discover_labels("Sample PDF text content")
@@ -308,7 +308,7 @@ class TestAIExtractor:
 
     def test_discover_labels_empty_text(self, mock_openai_client):
         """Test label discovery with empty text."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             with pytest.raises(DataExtractionError, match="No text content to analyze"):
@@ -318,7 +318,7 @@ class TestAIExtractor:
         """Test label discovery with empty AI response."""
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = ""
 
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             with pytest.raises(DataExtractionError, match="Unexpected error during AI call"):
@@ -329,7 +329,7 @@ class TestAIExtractor:
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = \
             "A, AB, Valid Label Name, Another Valid Label, " + "x" * 50  # Too long label
 
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             result = extractor.discover_labels("Sample text")
@@ -342,7 +342,7 @@ class TestAIExtractor:
 
     def test_extract_success(self, mock_openai_client):
         """Test successful AI data extraction."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             fields = ["customer_name", "policy_number"]
             text = "Sample PDF content"
@@ -356,7 +356,7 @@ class TestAIExtractor:
 
     def test_extract_empty_text(self, mock_openai_client):
         """Test extraction with empty text."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             with pytest.raises(DataExtractionError, match="No text content to process"):
@@ -364,7 +364,7 @@ class TestAIExtractor:
 
     def test_extract_no_fields(self, mock_openai_client):
         """Test extraction with no fields specified."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             with pytest.raises(DataExtractionError, match="No fields specified for extraction"):
@@ -372,7 +372,7 @@ class TestAIExtractor:
 
     def test_build_extraction_prompt(self, mock_openai_client):
         """Test extraction prompt building."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             fields = ["field1", "field2"]
             text = "Sample text content"
@@ -385,7 +385,7 @@ class TestAIExtractor:
 
     def test_build_extraction_prompt_long_text(self, mock_openai_client):
         """Test extraction prompt building with long text that gets truncated."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
             fields = ["field1"]
             text = "x" * 30000  # Longer than 20k limit
@@ -398,7 +398,7 @@ class TestAIExtractor:
 
     def test_parse_extraction_result_success(self, mock_openai_client):
         """Test successful parsing of extraction results."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             response = 'Here is the extracted data: {"name": "John", "age": "30"}'
@@ -408,7 +408,7 @@ class TestAIExtractor:
 
     def test_parse_extraction_result_no_json(self, mock_openai_client):
         """Test parsing when no JSON is found in response."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             response = "No JSON found in this response"
@@ -418,7 +418,7 @@ class TestAIExtractor:
 
     def test_parse_extraction_result_invalid_json(self, mock_openai_client):
         """Test parsing with invalid JSON format."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             response = '{"name": "John", "incomplete":'
@@ -428,7 +428,7 @@ class TestAIExtractor:
 
     def test_parse_extraction_result_non_dict_json(self, mock_openai_client):
         """Test parsing when JSON is not a dictionary."""
-        with patch('src.pdf_parser.extractors.OpenAI', return_value=mock_openai_client):
+        with patch('src.pdf_parser.extractors.ai_extractor.OpenAI', return_value=mock_openai_client):
             extractor = AIExtractor("test-api-key")
 
             response = '["not", "a", "dictionary"]'

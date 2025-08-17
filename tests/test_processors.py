@@ -171,7 +171,7 @@ class TestBatchProcessor:
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
              patch.object(pdf_processor, 'save_extraction_result') as mock_save, \
-             patch('src.pdf_parser.processors.st') as mock_st:
+             patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
 
             mock_process.side_effect = [
                 (sample_extraction_data, "hash1"),
@@ -221,7 +221,7 @@ class TestBatchProcessor:
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
              patch.object(pdf_processor, 'save_extraction_result') as mock_save, \
-             patch('src.pdf_parser.processors.st') as mock_st:
+             patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
 
             # First file succeeds, second fails
             mock_process.side_effect = [
@@ -262,7 +262,7 @@ class TestBatchProcessor:
         mock_extractor = Mock(spec=DataExtractor)
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
-             patch('src.pdf_parser.processors.st') as mock_st:
+             patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
 
             mock_process.side_effect = Exception("Processing failed")
 
@@ -298,7 +298,7 @@ class TestBatchProcessor:
         uploaded_files = [mock_file]
         mock_extractor = Mock(spec=DataExtractor)
 
-        with patch('src.pdf_parser.processors.st') as mock_st:
+        with patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
             results = batch_processor.process_batch(
                 uploaded_files, mock_extractor, ["field1"], "classic"
             )
@@ -322,7 +322,7 @@ class TestBatchProcessor:
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
              patch.object(pdf_processor, 'save_extraction_result') as mock_save, \
-             patch('src.pdf_parser.processors.st') as mock_st:
+             patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
 
             mock_process.return_value = (sample_extraction_data, "hash1")
             mock_save.side_effect = Exception("Database save failed")
@@ -352,7 +352,7 @@ class TestBatchProcessor:
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
              patch.object(pdf_processor, 'save_extraction_result') as mock_save, \
-             patch('src.pdf_parser.processors.st') as mock_st:
+             patch('src.pdf_parser.processors.batch_processor.st') as mock_st:
 
             mock_process.return_value = (sample_extraction_data, "hash1")
             mock_save.return_value = 1
@@ -379,7 +379,7 @@ class TestBatchProcessor:
 
         with patch.object(pdf_processor, 'process_file') as mock_process, \
              patch.object(pdf_processor, 'save_extraction_result') as mock_save, \
-             patch('src.pdf_parser.processors.st'):
+             patch('src.pdf_parser.processors.batch_processor.st'):
 
             mock_process.return_value = (sample_extraction_data, "hash1")
             mock_save.return_value = 10
@@ -431,7 +431,7 @@ class TestProcessorIntegration:
 
         with patch.object(pdf_processor.validator, 'validate_pdf_file'), \
              patch.object(pdf_processor.text_extractor, 'extract_text', return_value="Sample text"), \
-             patch('src.pdf_parser.processors.st'):
+             patch('src.pdf_parser.processors.batch_processor.st'):
 
             results = batch_processor.process_batch(
                 mock_files, mock_extractor, ["test_field"], "integration_test"

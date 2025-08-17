@@ -47,13 +47,13 @@ class TestDatabaseManager:
 
     def test_engine_property_database_creation(self, test_db_manager):
         """Test that engine creation also creates database tables."""
-        with patch('src.pdf_parser.database.Base.metadata.create_all') as mock_create_all:
+        with patch('src.pdf_parser.database.database_manager.Base.metadata.create_all') as mock_create_all:
             engine = test_db_manager.engine
             mock_create_all.assert_called_once_with(engine)
 
     def test_engine_property_creation_error(self):
         """Test handling of engine creation errors."""
-        with patch('src.pdf_parser.database.create_engine') as mock_create_engine:
+        with patch('src.pdf_parser.database.database_manager.create_engine') as mock_create_engine:
             mock_create_engine.side_effect = Exception("Database connection failed")
 
             db_manager = DatabaseManager("invalid://url")
@@ -63,7 +63,7 @@ class TestDatabaseManager:
 
     def test_engine_configuration(self, test_db_manager):
         """Test that engine is configured with correct parameters."""
-        with patch('src.pdf_parser.database.create_engine') as mock_create_engine:
+        with patch('src.pdf_parser.database.database_manager.create_engine') as mock_create_engine:
             mock_engine = Mock()
             mock_create_engine.return_value = mock_engine
 
@@ -149,7 +149,7 @@ class TestExtractionRepository:
             mock_create_session.return_value = mock_session
 
             # Create a mock record with the expected data
-            with patch('src.pdf_parser.database.Extraction') as mock_extraction_class:
+            with patch('src.pdf_parser.database.extraction_repository.Extraction') as mock_extraction_class:
                 mock_record = Mock()
                 mock_record.id = 1
                 mock_extraction_class.return_value = mock_record
@@ -189,7 +189,7 @@ class TestExtractionRepository:
             mock_record.id = 1
             mock_create_session.return_value = mock_session
 
-            with patch('src.pdf_parser.database.Extraction') as mock_extraction_class:
+            with patch('src.pdf_parser.database.extraction_repository.Extraction') as mock_extraction_class:
                 mock_extraction_class.return_value = mock_record
 
                 test_repository.save_extraction("test.pdf", "abc123", "classic", sample_extraction_data)
@@ -202,7 +202,7 @@ class TestExtractionRepository:
             mock_session = Mock()
             mock_create_session.return_value = mock_session
 
-            with patch('src.pdf_parser.database.Extraction') as mock_extraction_class:
+            with patch('src.pdf_parser.database.extraction_repository.Extraction') as mock_extraction_class:
                 mock_extraction_class.side_effect = SQLAlchemyError("Unexpected error")
 
                 with pytest.raises(DatabaseError):
@@ -221,7 +221,7 @@ class TestExtractionRepository:
             mock_session = Mock()
             mock_create_session.return_value = mock_session
 
-            with patch('src.pdf_parser.database.Extraction') as mock_extraction_class:
+            with patch('src.pdf_parser.database.extraction_repository.Extraction') as mock_extraction_class:
                 mock_record = Mock()
                 mock_record.id = 42
                 mock_extraction_class.return_value = mock_record
@@ -250,7 +250,7 @@ class TestExtractionRepository:
             mock_session = Mock()
             mock_create_session.return_value = mock_session
 
-            with patch('src.pdf_parser.database.Extraction') as mock_extraction_class:
+            with patch('src.pdf_parser.database.extraction_repository.Extraction') as mock_extraction_class:
                 mock_record = Mock()
                 mock_record.id = 1
                 mock_extraction_class.return_value = mock_record
