@@ -15,6 +15,7 @@ import pdfplumber
 import streamlit as st
 from langfuse.openai import OpenAI
 from openai import OpenAIError
+from langfuse import observe  # POPRAWIONE: import dla SDK v3
 
 # Dodane importy dla bazy danych
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, func
@@ -163,6 +164,7 @@ class ClassicExtractor:
                 raise
             raise PDFProcessingError(f"Błąd podczas czytania PDF: {str(e)}")
 
+    @observe(name="classic_extraction")
     def run(self, text: str, selected_fields: List[str] = None) -> Dict[str, str]:
         """Uruchamia ekstrakcję z obsługą błędów"""
         if not text or not text.strip():
@@ -203,6 +205,7 @@ class AIExtractor:
         except Exception as e:
             raise DataExtractionError(f"Błąd inicjalizacji klienta OpenAI: {str(e)}")
 
+    @observe(name="openai_chat_completion", as_type="generation")
     def _chat(self, messages: List[Dict], **kw) -> str:
         """Wywołanie API z obsługą błędów"""
         try:
@@ -219,6 +222,7 @@ class AIExtractor:
         except Exception as e:
             raise DataExtractionError(f"Nieoczekiwany błąd podczas wywołania AI: {str(e)}")
 
+    @observe(name="discover_labels")
     def discover(self, text: str, max_labels: int = 15) -> List[str]:
         """Odkrywa etykiety z obsługą błędów"""
         if not text or not text.strip():
@@ -248,6 +252,7 @@ class AIExtractor:
                 raise
             raise DataExtractionError(f"Błąd podczas odkrywania etykiet: {str(e)}")
 
+    @observe(name="ai_extract_data")
     def extract(self, text: str, fields: List[str]) -> Dict[str, str]:
         """Ekstraktuje dane z obsługą błędów"""
         if not text or not text.strip():
@@ -296,15 +301,109 @@ class AIExtractor:
 st.set_page_config(page_title="PDF Extractor", layout="wide")
 st.title("📄 PDF Extractor — Classic vs AI")
 
+# Sprawdzenie konfiguracji Langfuse
+def check_langfuse_config():
+    required_keys = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]
+    missing_keys = [key for key in required_keys if not os.getenv(key)]
+    return len(missing_keys) == 0
+
 # Langfuse monitoring info
-if os.getenv("LANGFUSE_SECRET_KEY"):
+if check_langfuse_config():
     st.info("🔍 Langfuse monitoring aktywny")
+else:
+    st.info("📊 Monitoring wyłączony - dodaj LANGFUSE_PUBLIC_KEY i LANGFUSE_SECRET_KEY")
 
 mode = st.radio("Tryb parsera:", ["Classic (Regex)", "AI (GPT-3.5)"], horizontal=True)
 
 if mode.startswith("AI") and not os.getenv("OPENAI_API_KEY"):
     st.error("⚠️ Ustaw zmienną OPENAI_API_KEY lub dodaj ją w .secrets.toml")
     st.stop()
+
+# ──────────────────────── FUNKCJE WYSOKIEGO POZIOMU Z DEKORATORAMI ────────────────────────────
+
+@observe(name="batch_pdf_processing")
+def process_batch_pdfs(uploaded_files, mode: str, selected_fields: List[str]):
+    """Batch processing PDF files z pełnym monitoringiem Langfuse"""
+    batch_results = []
+    
+    # Jedna sesja dla całego batcha
+    session = create_db_session()
+    
+    try:
+        for up in uploaded_files:
+            try:
+                pdf_bytes = up.read()
+                PDFValidator.validate_pdf_file(pdf_bytes, up.name)
+                text = ClassicExtractor.extract_text(pdf_bytes)
+                file_hash = sha256(pdf_bytes).hexdigest()[:6]
+                
+                if mode.startswith("Classic"):
+                    extractor = ClassicExtractor(REGEX_FIELDS)
+                    data = extractor.run(text, selected_fields)
+                else:
+                    extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
+                    data = extractor.extract(text, selected_fields)
+                
+                record = Extraction(
+                    filename=up.name,
+                    file_hash=file_hash,
+                    extraction_method= "classic" if mode.startswith("Classic") else "ai",
+                    extracted_data=json.dumps(data, ensure_ascii=False)
+                )
+                session.add(record)
+                session.flush()  # Flush bez commit
+                
+                batch_results.append({
+                    "file": up.name,
+                    "result": data,
+                    "db_id": record.id
+                })
+                st.write(f"✅ Przetworzono: {up.name}")  # Debug info
+                
+            except Exception as e:
+                batch_results.append({
+                    "file": up.name,
+                    "error": str(e)
+                })
+                st.write(f"❌ Błąd w {up.name}: {str(e)}")  # Debug info
+        
+        # Jeden commit na koniec
+        session.commit()
+        st.success("✅ Wszystkie pliki przetworzone i zapisane!")
+        
+    except Exception as e:
+        session.rollback()
+        st.error(f"❌ Błąd batch processing: {str(e)}")
+        raise e
+    finally:
+        session.close()
+
+    return batch_results
+
+@observe(name="single_pdf_processing")
+def process_single_pdf(uploaded_file, mode: str, selected_fields: List[str]):
+    """Single PDF processing z pełnym monitoringiem Langfuse"""
+    try:
+        # Wczytaj i zwaliduj plik
+        pdf_bytes = uploaded_file.read()
+        PDFValidator.validate_pdf_file(pdf_bytes, uploaded_file.name)
+        
+        # Ekstraktuj tekst
+        text = ClassicExtractor.extract_text(pdf_bytes)
+        file_hash = sha256(pdf_bytes).hexdigest()[:6]
+        
+        # Przetwarzanie w zależności od trybu
+        if mode.startswith("Classic"):
+            extractor = ClassicExtractor(REGEX_FIELDS)
+            data = extractor.run(text, selected_fields)
+        else:
+            extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
+            data = extractor.extract(text, selected_fields)
+        
+        return data, file_hash, text
+        
+    except Exception as e:
+        raise e
 
 # ──────────────────────── *** BATCH PDF SECTION *** ────────────────────────────
 st.header("📦 Batch PDF Extraction (asynchroniczne zapisywanie do bazy)")
@@ -329,59 +428,9 @@ if uploaded_files:
     if not batch_selected_fields:
         st.warning("Wybierz co najmniej jedno pole do ekstrakcji.")
     
-    # POPRAWIONE: Sekwencyjne przetwarzanie z jedną sesją dla lepszej niezawodności
     if st.button("Extract All (async batch & save to DB)"):
-        batch_results = []
+        batch_results = process_batch_pdfs(uploaded_files, mode, batch_selected_fields)
         
-        # Jedna sesja dla całego batcha
-        session = create_db_session()
-        
-        try:
-            for up in uploaded_files:
-                try:
-                    pdf_bytes = up.read()
-                    PDFValidator.validate_pdf_file(pdf_bytes, up.name)
-                    text = ClassicExtractor.extract_text(pdf_bytes)
-                    file_hash = sha256(pdf_bytes).hexdigest()[:6]
-                    
-                    if mode.startswith("Classic"):
-                        extractor = ClassicExtractor(REGEX_FIELDS)
-                        data = extractor.run(text, batch_selected_fields)
-                    else:
-                        extractor = AIExtractor(os.getenv("OPENAI_API_KEY"))
-                        data = extractor.extract(text, batch_selected_fields)
-                    
-                    record = Extraction(
-                        filename=up.name,
-                        file_hash=file_hash,
-                        extraction_method= "classic" if mode.startswith("Classic") else "ai",
-                        extracted_data=json.dumps(data, ensure_ascii=False)
-                    )
-                    session.add(record)
-                    session.flush()  # Flush bez commit
-                    
-                    batch_results.append({
-                        "file": up.name,
-                        "result": data,
-                        "db_id": record.id
-                    })
-                    st.write(f"✅ Przetworzono: {up.name}")  # Debug info
-                    
-                except Exception as e:
-                    batch_results.append({
-                        "file": up.name,
-                        "error": str(e)
-                    })
-                    st.write(f"❌ Błąd w {up.name}: {str(e)}")  # Debug info
-            
-            # Jeden commit na koniec
-            session.commit()
-            st.success("✅ Wszystkie pliki przetworzone i zapisane!")
-            
-        except Exception as e:
-            session.rollback()
-            st.error(f"❌ Błąd batch processing: {str(e)}")
-
         st.subheader("Wyniki batch extraction")
         for br in batch_results:
             st.write(f"**Plik:** {br['file']}")
@@ -399,37 +448,19 @@ if uploaded_files:
         )
 
 # ──────────────────────── 7. Główny proces z error handling ─────────────────────
-# Pojedynczy plik – nie zmieniane
+# Pojedynczy plik
 up = st.file_uploader("Wgraj PDF", type="pdf", key="single_uploader")
 if not up:
     st.stop()
 
 try:
-    # Wczytaj i zwaliduj plik
-    pdf_bytes = up.read()
-    PDFValidator.validate_pdf_file(pdf_bytes, up.name)
-    
-    # Ekstraktuj tekst
-    with st.spinner("Przetwarzanie PDF..."):
-        text = ClassicExtractor.extract_text(pdf_bytes)
-    
-    file_hash = sha256(pdf_bytes).hexdigest()[:6]
-    
     # Inicjalizacja sesji bazy danych
-    try:
-        session = get_db_session()
-    except DatabaseError as e:
-        st.error(f"❌ {str(e)}")
-        st.stop()
-
-except ValidationError as e:
-    st.error(f"❌ Błąd walidacji: {str(e)}")
-    st.stop()
-except PDFProcessingError as e:
+    session = get_db_session()
+except DatabaseError as e:
     st.error(f"❌ {str(e)}")
     st.stop()
 except Exception as e:
-    st.error(f"❌ Nieoczekiwany błąd: {str(e)}")
+    st.error(f"❌ Nieoczekiwany błąd inicjalizacji bazy: {str(e)}")
     st.stop()
 
 # ───────────────────── Classic flow ───────────────────────────────
@@ -449,8 +480,7 @@ if mode.startswith("Classic"):
     if st.button("Extract selected fields", key="single_extract_button"):
         try:
             with st.spinner("Ekstraktowanie danych..."):
-                classic = ClassicExtractor(REGEX_FIELDS)
-                data = classic.run(text, selected)
+                data, file_hash, _ = process_single_pdf(up, mode, selected)
                 
                 if data:
                     st.success("Ekstrakcja zakończona")
@@ -488,10 +518,14 @@ if mode.startswith("Classic"):
         except Exception as e:
             st.error(f"❌ Nieoczekiwany błąd podczas ekstrakcji: {str(e)}")
 
-
 # ───────────────────── AI flow ────────────────────────────────────
 else:
     try:
+        # Wczesne wczytanie pliku dla AI flow
+        pdf_bytes = up.read()
+        PDFValidator.validate_pdf_file(pdf_bytes, up.name)
+        text = ClassicExtractor.extract_text(pdf_bytes)
+        
         api = AIExtractor(os.getenv("OPENAI_API_KEY"))
         st.header("🤖 AI Quick-scan")
 
@@ -512,11 +546,13 @@ else:
         if st.button("Extract selected fields", key="single_ai_extract_button"):
             try:
                 with st.spinner("Ekstraktowanie danych przez AI..."):
-                    result = api.extract(text, selected)
+                    # Użyj już wczytanego tekstu zamiast ponownego odczytu pliku
+                    file_hash = sha256(pdf_bytes).hexdigest()[:6]
+                    data = api.extract(text, selected)
                     
-                    if result:
+                    if data:
                         st.success("Ekstrakcja zakończona")
-                        st.json(result)
+                        st.json(data)
                         
                         # Zapis do bazy danych z obsługą błędów
                         try:
@@ -524,7 +560,7 @@ else:
                                 filename=up.name,
                                 file_hash=file_hash,
                                 extraction_method="ai",
-                                extracted_data=json.dumps(result, ensure_ascii=False)
+                                extracted_data=json.dumps(data, ensure_ascii=False)
                             )
                             session.add(record)
                             session.commit()
@@ -535,7 +571,7 @@ else:
                         
                         st.download_button(
                             "💾 Pobierz JSON",
-                            json.dumps(result, ensure_ascii=False, indent=2),
+                            json.dumps(data, ensure_ascii=False, indent=2),
                             file_name=f"{Path(up.name).stem}_{file_hash}.json",
                             mime="application/json",
                         )
@@ -547,6 +583,10 @@ else:
             except Exception as e:
                 st.error(f"❌ Nieoczekiwany błąd podczas ekstrakcji AI: {str(e)}")
                 
+    except ValidationError as e:
+        st.error(f"❌ Błąd walidacji: {str(e)}")
+    except PDFProcessingError as e:
+        st.error(f"❌ {str(e)}")
     except DataExtractionError as e:
         st.error(f"❌ {str(e)}")
     except Exception as e:
