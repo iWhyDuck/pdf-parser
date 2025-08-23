@@ -6,6 +6,8 @@ extraction, and result persistence.
 """
 
 from .pdf_processor import PDFProcessor
-from .batch_processor import BatchProcessor
+from .async_pdf_processor import AsyncPDFProcessor
+from .batch_processor import AsyncBatchProcessor, BatchResult, ProgressEvent, ProgressCallback, ProgressEventType
+from .streamlit_batch_processor import StreamlitBatchProcessor
 
-__all__ = ["PDFProcessor", "BatchProcessor"]
+__all__ = ["PDFProcessor", "AsyncPDFProcessor", "AsyncBatchProcessor", "BatchResult", "ProgressEvent", "ProgressCallback", "ProgressEventType", "StreamlitBatchProcessor"]

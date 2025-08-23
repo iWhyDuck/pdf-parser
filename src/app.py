@@ -28,6 +28,7 @@ from pdf_parser import (
     DatabaseManager,
     ExtractionRepository,
     PDFProcessor,
+    AsyncPDFProcessor,
     BatchProcessor,
     UIRenderer,
     DataExtractor,
@@ -62,7 +63,8 @@ class PDFExtractorApp:
         self.db_manager: DatabaseManager = DatabaseManager()
         self.repository: ExtractionRepository = ExtractionRepository(self.db_manager)
         self.processor: PDFProcessor = PDFProcessor(self.repository)
-        self.batch_processor: BatchProcessor = BatchProcessor(self.processor)
+        self.async_processor: AsyncPDFProcessor = AsyncPDFProcessor(self.repository)
+        self.batch_processor: BatchProcessor = BatchProcessor(self.async_processor, max_concurrent=5)
         self.ui: UIRenderer = UIRenderer()
 
     def run(self) -> None:

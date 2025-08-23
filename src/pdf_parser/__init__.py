@@ -29,7 +29,7 @@ from .models import Base, Extraction
 from .database import DatabaseManager, ExtractionRepository
 from .validators import PDFValidator
 from .extractors import TextExtractor, DataExtractor, ClassicExtractor, AIExtractor
-from .processors import PDFProcessor, BatchProcessor
+from .processors import PDFProcessor, AsyncPDFProcessor, AsyncBatchProcessor, BatchResult, ProgressEvent, ProgressCallback, ProgressEventType, StreamlitBatchProcessor
 from .ui import FieldSelector, UIRenderer
 
 __all__ = [
@@ -55,8 +55,19 @@ __all__ = [
     "AIExtractor",
     # Processors
     "PDFProcessor",
+    "AsyncPDFProcessor",
+    "AsyncBatchProcessor",
+    "BatchResult",
+    "ProgressEvent",
+    "ProgressCallback",
+    "ProgressEventType",
+    "StreamlitBatchProcessor",
+    # Compatibility alias
     "BatchProcessor",
     # UI
     "FieldSelector",
     "UIRenderer"
 ]
+
+# Create compatibility alias for backward compatibility
+BatchProcessor = StreamlitBatchProcessor
